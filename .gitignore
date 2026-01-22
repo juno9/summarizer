@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+
+# 환경 변수
+.env
+
+# 데이터
+data/*.db
+data/*.log
+data/cache/
+
+# 인증
+credentials/token.json
+credentials/google_credentials.json
+
+# 임시 파일
+/tmp/
+*.tmp
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

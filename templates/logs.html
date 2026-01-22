@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+
+{% block title %}Logs - YouTube Summarizer{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h2>Application Logs</h2>
+        <div style="display: flex; gap: 0.5rem;">
+            <select id="levelFilter" onchange="filterLogs()" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 5px;">
+                <option value="">All Levels</option>
+                <option value="INFO" {% if current_level == 'INFO' %}selected{% endif %}>INFO</option>
+                <option value="WARNING" {% if current_level == 'WARNING' %}selected{% endif %}>WARNING</option>
+                <option value="ERROR" {% if current_level == 'ERROR' %}selected{% endif %}>ERROR</option>
+            </select>
+            <form action="/logs/clear" method="POST" style="display: inline;"
+                  onsubmit="return confirm('Clear all logs?');">
+                <button type="submit" class="btn btn-danger">Clear Logs</button>
+            </form>
+            <button class="btn btn-secondary" onclick="location.reload()">Refresh</button>
+        </div>
+    </div>
+
+    <!-- Tab Navigation -->
+    <div style="border-bottom: 2px solid #eee; margin-bottom: 1rem;">
+        <button class="tab-btn active" onclick="showTab('db')">Database Logs ({{ db_logs|length }})</button>
+        <button class="tab-btn" onclick="showTab('file')">File Logs ({{ file_logs|length }})</button>
+    </div>
+
+    <!-- Database Logs Tab -->
+    <div id="db-tab" class="tab-content">
+        {% if db_logs %}
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 150px;">Time</th>
+                        <th style="width: 80px;">Level</th>
+                        <th style="width: 100px;">Source</th>
+                        <th>Message</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in db_logs %}
+                    <tr class="log-row" data-level="{{ log.level }}">
+                        <td class="text-muted" style="font-size: 0.85rem;">{{ log.created_at.strftime('%m-%d %H:%M:%S') }}</td>
+                        <td>
+                            {% if log.level == 'ERROR' %}
+                                <span class="badge badge-danger">ERROR</span>
+                            {% elif log.level == 'WARNING' %}
+                                <span class="badge badge-warning">WARN</span>
+                            {% else %}
+                                <span class="badge badge-info">INFO</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted">{{ log.source }}</td>
+                        <td style="font-family: monospace; font-size: 0.85rem;">{{ log.message }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <div class="empty-state">
+                <p>No logs yet</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- File Logs Tab -->
+    <div id="file-tab" class="tab-content" style="display: none;">
+        {% if file_logs %}
+            <div style="background: #1a1a2e; color: #0f0; padding: 1rem; border-radius: 5px; font-family: monospace; font-size: 0.85rem; max-height: 500px; overflow-y: auto;">
+                {% for line in file_logs %}
+                    <div style="margin-bottom: 0.25rem; {% if 'ERROR' in line %}color: #ff6b6b;{% elif 'WARNING' in line %}color: #ffd93d;{% endif %}">{{ line }}</div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p>No file logs yet</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <h2>System Status</h2>
+    <div id="systemStatus">
+        <p>Loading...</p>
+    </div>
+</div>
+
+<style>
+    .tab-btn {
+        background: none;
+        border: none;
+        padding: 0.75rem 1.5rem;
+        cursor: pointer;
+        font-size: 1rem;
+        color: #666;
+        border-bottom: 3px solid transparent;
+        margin-bottom: -2px;
+    }
+
+    .tab-btn:hover {
+        color: #333;
+    }
+
+    .tab-btn.active {
+        color: #667eea;
+        border-bottom-color: #667eea;
+    }
+
+    .log-row.hidden {
+        display: none;
+    }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Tab switching
+    function showTab(tab) {
+        document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+
+        document.getElementById(tab + '-tab').style.display = 'block';
+        event.target.classList.add('active');
+    }
+
+    // Level filtering
+    function filterLogs() {
+        const level = document.getElementById('levelFilter').value;
+        const rows = document.querySelectorAll('.log-row');
+
+        rows.forEach(row => {
+            if (!level || row.dataset.level === level) {
+                row.classList.remove('hidden');
+            } else {
+                row.classList.add('hidden');
+            }
+        });
+
+        // Also update URL
+        if (level) {
+            window.history.replaceState(null, '', `?level=${level}`);
+        } else {
+            window.history.replaceState(null, '', '/logs');
+        }
+    }
+
+    // Load system status
+    fetch('/api/health')
+        .then(res => res.json())
+        .then(data => {
+            document.getElementById('systemStatus').innerHTML = `
+                <table>
+                    <tr><td><strong>Status</strong></td><td><span class="badge badge-success">${data.status}</span></td></tr>
+                    <tr><td><strong>Last Check</strong></td><td>${data.timestamp}</td></tr>
+                </table>
+            `;
+        })
+        .catch(() => {
+            document.getElementById('systemStatus').innerHTML = '<p class="text-muted">Failed to load status</p>';
+        });
+
+    // Load config
+    fetch('/api/config')
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                const cfg = data.data;
+                const statusEl = document.getElementById('systemStatus');
+                statusEl.innerHTML += `
+                    <hr>
+                    <h3 style="margin: 1rem 0 0.5rem;">Configuration</h3>
+                    <table>
+                        <tr><td>Check Interval</td><td>${cfg.check_interval_hours} hours</td></tr>
+                        <tr><td>TTS Method</td><td>${cfg.tts_method}</td></tr>
+                        <tr><td>Local Whisper</td><td>${cfg.use_local_whisper ? 'Yes' : 'No'}</td></tr>
+                        <tr><td>Gemini API</td><td>${cfg.has_gemini_key ? '<span class="badge badge-success">Configured</span>' : '<span class="badge badge-danger">Missing</span>'}</td></tr>
+                        <tr><td>Drive Folder</td><td>${cfg.has_drive_folder ? '<span class="badge badge-success">Configured</span>' : '<span class="badge badge-warning">Not set</span>'}</td></tr>
+                    </table>
+                `;
+            }
+        });
+
+    // Auto-refresh every 30 seconds
+    setInterval(() => {
+        if (document.visibilityState === 'visible') {
+            // Only refresh if page is visible
+            // location.reload();
+        }
+    }, 30000);
+</script>
+{% endblock %}

@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - YouTube Summarizer{% endblock %}
+
+{% block content %}
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>{{ stats.total_processed }}</h3>
+        <p>Total Processed</p>
+    </div>
+    <div class="stat-card green">
+        <h3>{{ stats.active_channels }}</h3>
+        <p>Active Channels</p>
+    </div>
+    <div class="stat-card orange">
+        <h3>{{ stats.today_processed }}</h3>
+        <p>Today</p>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Quick Actions</h2>
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/channels" class="btn btn-primary">+ Add Channel</a>
+        <button class="btn btn-secondary" onclick="checkNow()">Check Now</button>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+    <div class="card">
+        <h2>Recent Videos</h2>
+        {% if recent_videos %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Channel</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for video in recent_videos %}
+                    <tr>
+                        <td>
+                            <a href="{{ video.video_url }}" target="_blank" class="text-truncate" style="display: block; max-width: 200px;">
+                                {{ video.title }}
+                            </a>
+                        </td>
+                        <td class="text-muted">{{ video.channel }}</td>
+                        <td class="text-muted">{{ video.processed_at|timeago }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <div style="margin-top: 1rem;">
+                <a href="/history" class="btn btn-sm btn-secondary">View All</a>
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p>No videos processed yet</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2>Monitored Channels</h2>
+        {% if channels %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Channel</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for channel in channels %}
+                    <tr>
+                        <td>
+                            <a href="{{ channel.channel_url }}" target="_blank">
+                                {{ channel.channel_name or channel.channel_url[:30] }}
+                            </a>
+                        </td>
+                        <td>
+                            {% if channel.is_active %}
+                                <span class="badge badge-success">Active</span>
+                            {% else %}
+                                <span class="badge badge-warning">Paused</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <div style="margin-top: 1rem;">
+                <a href="/channels" class="btn btn-sm btn-secondary">Manage Channels</a>
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p>No channels added yet</p>
+                <a href="/channels" class="btn btn-primary" style="margin-top: 1rem;">Add Channel</a>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card" style="margin-top: 1.5rem;">
+    <h2>Manual Process</h2>
+    <form id="manualProcessForm" style="display: flex; gap: 1rem; align-items: flex-end;">
+        <div class="form-group" style="flex: 1; margin-bottom: 0;">
+            <label for="videoUrl">YouTube Video URL</label>
+            <input type="url" id="videoUrl" placeholder="https://www.youtube.com/watch?v=..." required>
+        </div>
+        <button type="submit" class="btn btn-primary">Process</button>
+    </form>
+    <p class="text-muted" style="margin-top: 0.5rem; font-size: 0.85rem;">
+        Manually add a video to the processing queue
+    </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function checkNow() {
+        fetch('/api/process', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: 'check_now'})
+        }).then(res => {
+            alert('Check triggered!');
+        });
+    }
+
+    document.getElementById('manualProcessForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const videoUrl = document.getElementById('videoUrl').value;
+
+        fetch('/api/process', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({video_url: videoUrl})
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert('Video added to queue!');
+                document.getElementById('videoUrl').value = '';
+            } else {
+                alert('Error: ' + data.error);
+            }
+        });
+    });
+</script>
+{% endblock %}

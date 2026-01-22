@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  youtube-summarizer:
+    build: .
+    container_name: youtube_summarizer
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./credentials:/app/credentials
+      - ./host_scripts:/host_scripts
+      - /tmp/youtube_temp:/tmp/youtube_temp
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Seoul
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=5000

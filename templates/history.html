@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block title %}History - YouTube Summarizer{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h2>Processing History ({{ total }} total)</h2>
+        <div>
+            <input type="text" id="searchInput" placeholder="Search videos..."
+                   style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 5px; width: 200px;">
+        </div>
+    </div>
+
+    {% if videos %}
+        <table id="historyTable">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Channel</th>
+                    <th>Status</th>
+                    <th>Processed</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for video in videos %}
+                <tr>
+                    <td>
+                        <a href="{{ video.video_url }}" target="_blank" class="text-truncate" style="display: block; max-width: 350px;">
+                            {{ video.title }}
+                        </a>
+                        {% if video.summary %}
+                            <p class="text-muted" style="font-size: 0.8rem; margin-top: 0.25rem; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                {{ video.summary[:100] }}...
+                            </p>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted">{{ video.channel }}</td>
+                    <td>
+                        {% if video.status == 'completed' %}
+                            <span class="badge badge-success">Completed</span>
+                        {% elif video.status == 'processing' %}
+                            <span class="badge badge-info">Processing</span>
+                        {% elif video.status == 'failed' %}
+                            <span class="badge badge-danger">Failed</span>
+                        {% else %}
+                            <span class="badge badge-warning">{{ video.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted">{{ video.processed_at|timeago }}</td>
+                    <td>
+                        {% if video.audio_file_id %}
+                            <a href="https://drive.google.com/file/d/{{ video.audio_file_id }}/view"
+                               target="_blank" class="btn btn-sm btn-primary">
+                                Listen
+                            </a>
+                        {% endif %}
+                        <button class="btn btn-sm btn-secondary" onclick="showDetails('{{ video.video_id }}')">
+                            Details
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if total_pages > 1 %}
+        <div class="pagination">
+            {% if page > 1 %}
+                <a href="?page={{ page - 1 }}">Previous</a>
+            {% endif %}
+
+            {% for p in range(1, total_pages + 1) %}
+                {% if p == page %}
+                    <a href="?page={{ p }}" class="active">{{ p }}</a>
+                {% elif p <= 3 or p > total_pages - 3 or (p >= page - 1 and p <= page + 1) %}
+                    <a href="?page={{ p }}">{{ p }}</a>
+                {% elif p == 4 or p == total_pages - 3 %}
+                    <span style="padding: 0.5rem;">...</span>
+                {% endif %}
+            {% endfor %}
+
+            {% if page < total_pages %}
+                <a href="?page={{ page + 1 }}">Next</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    {% else %}
+        <div class="empty-state">
+            <p style="font-size: 3rem;">📼</p>
+            <p>No videos processed yet</p>
+            <p class="text-muted">Videos will appear here once processed</p>
+        </div>
+    {% endif %}
+</div>
+
+<!-- Details Modal -->
+<div id="detailsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="background: #fff; max-width: 600px; margin: 5% auto; padding: 2rem; border-radius: 10px; max-height: 80vh; overflow-y: auto;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h3 id="modalTitle">Video Details</h3>
+            <button onclick="closeModal()" style="background: none; border: none; font-size: 1.5rem; cursor: pointer;">&times;</button>
+        </div>
+        <div id="modalContent">
+            <p>Loading...</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Search functionality
+    document.getElementById('searchInput').addEventListener('input', function(e) {
+        const query = e.target.value.toLowerCase();
+        const rows = document.querySelectorAll('#historyTable tbody tr');
+
+        rows.forEach(row => {
+            const text = row.textContent.toLowerCase();
+            row.style.display = text.includes(query) ? '' : 'none';
+        });
+    });
+
+    // Modal functions
+    function showDetails(videoId) {
+        document.getElementById('detailsModal').style.display = 'block';
+        document.getElementById('modalContent').innerHTML = '<p>Loading...</p>';
+
+        fetch(`/api/videos/${videoId}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    const video = data.data;
+                    document.getElementById('modalTitle').textContent = video.title;
+                    document.getElementById('modalContent').innerHTML = `
+                        <p><strong>Channel:</strong> ${video.channel}</p>
+                        <p><strong>Video ID:</strong> ${video.video_id}</p>
+                        <p><strong>Status:</strong> ${video.status}</p>
+                        <p><strong>Processed:</strong> ${video.processed_at}</p>
+                        ${video.summary ? `<hr><p><strong>Summary:</strong></p><p>${video.summary}</p>` : ''}
+                        ${video.error_message ? `<hr><p><strong>Error:</strong></p><p style="color: red;">${video.error_message}</p>` : ''}
+                        <hr>
+                        <a href="${video.video_url}" target="_blank" class="btn btn-primary">Watch on YouTube</a>
+                        ${video.audio_file_id ? `<a href="https://drive.google.com/file/d/${video.audio_file_id}/view" target="_blank" class="btn btn-secondary">Listen on Drive</a>` : ''}
+                    `;
+                } else {
+                    document.getElementById('modalContent').innerHTML = '<p>Error loading details</p>';
+                }
+            });
+    }
+
+    function closeModal() {
+        document.getElementById('detailsModal').style.display = 'none';
+    }
+
+    // Close modal on outside click
+    document.getElementById('detailsModal').addEventListener('click', function(e) {
+        if (e.target === this) closeModal();
+    });
+</script>
+{% endblock %}

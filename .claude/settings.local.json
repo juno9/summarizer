@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -ExecutionPolicy Bypass -File ./setup.ps1)",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $content = Get-Content -Path ''./setup.ps1'' -Raw -Encoding UTF8; Invoke-Expression $content\")",
+      "Bash(dir /b C:youtube-summarizer)",
+      "Bash(docker compose:*)",
+      "Bash(docker info:*)",
+      "Bash(docker logs:*)",
+      "Bash(curl:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(python:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker-compose restart:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(dir:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(del /f nul)"
+    ]
+  }
+}
