@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  youtube-summarizer-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: youtube-summarizer-gpu
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./credentials:/app/credentials
+      - ollama_data:/root/.ollama
+    environment:
+      - USE_LOCAL_LLM=true
+      - CUDA_VISIBLE_DEVICES=0
+      - WHISPER_MODEL=base
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

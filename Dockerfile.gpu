@@ -1,0 +1,55 @@
+FROM nvidia/cuda:12.1-runtime-ubuntu22.04
+
+WORKDIR /app
+
+# Python 3.11 설치
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-pip \
+    python3.11-dev \
+    curl \
+    wget \
+    git \
+    ffmpeg \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 3.11을 기본으로 설정
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+RUN update-alternatives --install /usr/bin/pip pip /usr/bin/pip3.11 1
+
+# deno 설치 (yt-dlp JavaScript 런타임)
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"
+
+# PyTorch GPU 설치
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Python 패키지
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --upgrade yt-dlp
+
+# Ollama 설치
+RUN curl -fsSL https://ollama.com/install.sh | sh
+
+# 앱 복사
+COPY app/ /app/
+COPY templates/ /app/templates/
+COPY static/ /app/static/
+
+# 디렉토리 생성
+RUN mkdir -p /tmp/youtube_temp /app/data /app/credentials
+
+# 환경 변수
+ENV PYTHONPATH=/app
+ENV DB_PATH=/app/data/youtube_summarizer.db
+ENV CUDA_VISIBLE_DEVICES=0
+ENV USE_LOCAL_LLM=true
+
+# 포트 노출
+EXPOSE 5000
+
+# Ollama 서비스 시작 및 앱 실행
+CMD ollama serve & ollama pull llama3.2:3b & python main.py

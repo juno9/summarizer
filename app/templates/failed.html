@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block title %}실패 영상 관리 - YouTube Summarizer{% endblock %}
+
+{% block content %}
+<div class="stats-grid">
+    <div class="stat-card orange">
+        <h3>{{ videos|length }}</h3>
+        <p>전체 실패</p>
+    </div>
+    <div class="stat-card green">
+        <h3>{{ retryable_count }}</h3>
+        <p>재시도 가능</p>
+    </div>
+    <div class="stat-card">
+        <h3>{{ non_retryable_count }}</h3>
+        <p>재시도 불가</p>
+    </div>
+</div>
+
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h2>실패 영상 목록</h2>
+        {% if retryable_count > 0 %}
+        <button class="btn btn-primary" onclick="retryAll()" id="retryAllBtn">
+            모두 재시도 ({{ retryable_count }}개)
+        </button>
+        {% endif %}
+    </div>
+
+    {% if videos %}
+    <table>
+        <thead>
+            <tr>
+                <th>제목</th>
+                <th>채널</th>
+                <th>실패 원인</th>
+                <th>재시도</th>
+                <th>시간</th>
+                <th>작업</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for video in videos %}
+            <tr id="row-{{ video.video_id }}">
+                <td class="text-truncate">
+                    <a href="https://www.youtube.com/watch?v={{ video.video_id }}" target="_blank">
+                        {{ video.title or video.video_id }}
+                    </a>
+                </td>
+                <td>{{ video.channel or '-' }}</td>
+                <td>
+                    <span class="badge {% if video.is_retryable %}badge-warning{% else %}badge-danger{% endif %}">
+                        {{ get_failure_reason_display(video.failure_reason) }}
+                    </span>
+                    {% if video.error_message %}
+                    <br><small class="text-muted" title="{{ video.error_message }}">
+                        {{ video.error_message[:50] }}{% if video.error_message|length > 50 %}...{% endif %}
+                    </small>
+                    {% endif %}
+                </td>
+                <td>
+                    {{ video.retry_count or 0 }} / 3
+                </td>
+                <td>{{ video.processed_at|timeago }}</td>
+                <td>
+                    {% if video.is_retryable and (video.retry_count or 0) < 3 %}
+                    <button class="btn btn-primary btn-sm" onclick="retryVideo('{{ video.video_id }}')" id="retry-{{ video.video_id }}">
+                        재시도
+                    </button>
+                    {% else %}
+                    <span class="text-muted">-</span>
+                    {% endif %}
+                    <button class="btn btn-danger btn-sm" onclick="deleteRecord('{{ video.video_id }}')" title="기록 삭제 (다음 체크 시 재처리)">
+                        삭제
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <p>실패한 영상이 없습니다.</p>
+    </div>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>실패 원인 안내</h2>
+    <table>
+        <tr>
+            <td><span class="badge badge-danger">멤버십 전용</span></td>
+            <td>채널 멤버십 가입자만 볼 수 있는 컨텐츠입니다. 재시도해도 실패합니다.</td>
+        </tr>
+        <tr>
+            <td><span class="badge badge-danger">비공개 영상</span></td>
+            <td>업로더가 비공개로 설정한 영상입니다.</td>
+        </tr>
+        <tr>
+            <td><span class="badge badge-danger">영상 없음</span></td>
+            <td>삭제되었거나 존재하지 않는 영상입니다.</td>
+        </tr>
+        <tr>
+            <td><span class="badge badge-warning">요청 제한</span></td>
+            <td>YouTube Rate Limit. 시간이 지나면 재시도 가능합니다.</td>
+        </tr>
+        <tr>
+            <td><span class="badge badge-warning">네트워크 오류</span></td>
+            <td>일시적인 네트워크 문제. 재시도 가능합니다.</td>
+        </tr>
+        <tr>
+            <td><span class="badge badge-warning">인증 필요</span></td>
+            <td>쿠키 또는 OAuth 토큰 설정이 필요합니다.</td>
+        </tr>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function retryVideo(videoId) {
+    const btn = document.getElementById('retry-' + videoId);
+    const originalText = btn.textContent;
+    btn.textContent = '처리중...';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch('/api/retry/' + videoId, { method: 'POST' });
+        const result = await response.json();
+
+        if (result.success) {
+            alert('재시도 성공!');
+            document.getElementById('row-' + videoId).remove();
+        } else {
+            alert('재시도 실패: ' + result.message);
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    } catch (error) {
+        alert('오류 발생: ' + error.message);
+        btn.textContent = originalText;
+        btn.disabled = false;
+    }
+}
+
+async function retryAll() {
+    if (!confirm('재시도 가능한 모든 영상을 처리하시겠습니까?')) {
+        return;
+    }
+
+    const btn = document.getElementById('retryAllBtn');
+    btn.textContent = '처리중...';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch('/api/retry-all', { method: 'POST' });
+        const result = await response.json();
+
+        alert(`완료!\n성공: ${result.success}개\n실패: ${result.failed}개\n스킵: ${result.skipped}개`);
+        location.reload();
+    } catch (error) {
+        alert('오류 발생: ' + error.message);
+        btn.textContent = '모두 재시도';
+        btn.disabled = false;
+    }
+}
+
+async function deleteRecord(videoId) {
+    if (!confirm('이 기록을 삭제하시겠습니까?\n삭제하면 다음 체크 시 다시 처리를 시도합니다.')) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/delete-failed/' + videoId, { method: 'DELETE' });
+        const result = await response.json();
+
+        if (result.success) {
+            document.getElementById('row-' + videoId).remove();
+            alert(result.message);
+        } else {
+            alert('삭제 실패: ' + result.message);
+        }
+    } catch (error) {
+        alert('오류 발생: ' + error.message);
+    }
+}
+</script>
+{% endblock %}

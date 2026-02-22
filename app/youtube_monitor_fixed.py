@@ -132,8 +132,7 @@ class YouTubeMonitor:
         """영상 처리 여부 확인"""
         return self.db.is_video_processed(video_id)
 
-    def mark_processed(self, video_id, title, channel, summary=None, audio_file_id=None,
-                       status='completed', error_message=None, failure_reason=None, is_retryable=True):
+    def mark_processed(self, video_id, title, channel, summary=None, audio_file_id=None, status='completed', error_message=None):
         """영상을 처리됨으로 표시"""
         self.db.add_processed_video(
             video_id=video_id,
@@ -142,16 +141,12 @@ class YouTubeMonitor:
             summary=summary,
             audio_file_id=audio_file_id,
             status=status,
-            error_message=error_message,
-            failure_reason=failure_reason,
-            is_retryable=is_retryable
+            error_message=error_message
         )
         if status == 'completed':
             logger.info(f"영상 처리 완료 기록: {title}")
         else:
-            retryable_str = "재시도 가능" if is_retryable else "재시도 불가"
-            reason_str = f" ({failure_reason})" if failure_reason else ""
-            logger.error(f"영상 처리 실패 기록: {title}{reason_str} - {retryable_str}")
+            logger.error(f"영상 처리 실패 기록: {title} - {error_message}")
 
     def _update_channel_checked(self, channel_url):
         """채널의 last_checked 업데이트"""

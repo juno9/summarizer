@@ -11,12 +11,17 @@ import threading
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
+# 프로젝트 루트 기준 data 디렉토리
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DATA_DIR = os.path.join(_PROJECT_ROOT, 'data')
+os.makedirs(_DATA_DIR, exist_ok=True)
+
 # 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/app/data/app.log'),
+        logging.FileHandler(os.path.join(_DATA_DIR, 'app.log'), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -47,12 +52,18 @@ def run_worker():
 
             if new_videos:
                 logger.info(f"{len(new_videos)}개의 새 영상 발견")
-                for video in new_videos:
+                for i, video in enumerate(new_videos):
                     logger.info(f"처리 대상: {video['title']}")
                     try:
                         processor.process_video(video)
                     except Exception as e:
                         logger.error(f"영상 처리 실패: {video['title']} - {e}")
+
+                    # YouTube rate limit 방지: 영상 간 2분 대기
+                    if i < len(new_videos) - 1:
+                        import time
+                        logger.info("다음 영상까지 2분 대기 (rate limit 방지)...")
+                        time.sleep(120)
             else:
                 logger.info("새 영상 없음")
 

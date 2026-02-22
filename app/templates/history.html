@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+
+{% block title %}History - YouTube Summarizer{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h2>Processing History ({{ total }} total)</h2>
+        <div>
+            <input type="text" id="searchInput" placeholder="Search videos..."
+                   style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 5px; width: 200px;">
+        </div>
+    </div>
+
+    {% if videos %}
+        <table id="historyTable">
+            <thead>
+                <tr>
+                    <th style="width:120px"></th>
+                    <th>Title</th>
+                    <th>Channel</th>
+                    <th>Status</th>
+                    <th>Processed</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for video in videos %}
+                <tr>
+                    <td style="padding: 0.5rem;">
+                        <a href="{{ video.video_url }}" target="_blank">
+                            <img src="https://img.youtube.com/vi/{{ video.video_id }}/hqdefault.jpg"
+                                 onerror="this.src='https://img.youtube.com/vi/{{ video.video_id }}/mqdefault.jpg'"
+                                 style="width:120px;height:68px;object-fit:cover;border-radius:4px;display:block;">
+                        </a>
+                    </td>
+                    <td>
+                        <a href="{{ video.video_url }}" target="_blank" class="text-truncate" style="display: block; max-width: 300px;">
+                            {{ video.title }}
+                        </a>
+                        {% if video.summary %}
+                            <p class="text-muted" style="font-size: 0.8rem; margin-top: 0.25rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                {{ video.summary[:100] }}...
+                            </p>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted">{{ video.channel }}</td>
+                    <td>
+                        {% if video.status == 'completed' %}
+                            <span class="badge badge-success">Completed</span>
+                        {% elif video.status == 'processing' %}
+                            <span class="badge badge-info">Processing</span>
+                        {% elif video.status == 'failed' %}
+                            <span class="badge badge-danger">Failed</span>
+                            {% if video.failure_reason %}
+                                <br><small class="text-muted">{{ get_failure_reason_display(video.failure_reason) }}</small>
+                            {% endif %}
+                            {% if video.error_message %}
+                                <br><small class="text-muted" title="{{ video.error_message }}" style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                    {{ video.error_message[:40] }}{% if video.error_message|length > 40 %}...{% endif %}
+                                </small>
+                            {% endif %}
+                        {% else %}
+                            <span class="badge badge-warning">{{ video.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted">{{ video.processed_at|timeago }}</td>
+                    <td>
+                        {% if video.audio_file_id %}
+                            <a href="https://drive.google.com/file/d/{{ video.audio_file_id }}/view"
+                               target="_blank" class="btn btn-sm btn-primary">
+                                Open
+                            </a>
+                        {% endif %}
+                        <button class="btn btn-sm btn-secondary" onclick="showDetails('{{ video.video_id }}')">
+                            Details
+                        </button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteRecord('{{ video.video_id }}')" title="기록 삭제">
+                            X
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if total_pages > 1 %}
+        <div class="pagination">
+            {% if page > 1 %}
+                <a href="?page={{ page - 1 }}">Previous</a>
+            {% endif %}
+
+            {% for p in range(1, total_pages + 1) %}
+                {% if p == page %}
+                    <a href="?page={{ p }}" class="active">{{ p }}</a>
+                {% elif p <= 3 or p > total_pages - 3 or (p >= page - 1 and p <= page + 1) %}
+                    <a href="?page={{ p }}">{{ p }}</a>
+                {% elif p == 4 or p == total_pages - 3 %}
+                    <span style="padding: 0.5rem;">...</span>
+                {% endif %}
+            {% endfor %}
+
+            {% if page < total_pages %}
+                <a href="?page={{ page + 1 }}">Next</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    {% else %}
+        <div class="empty-state">
+            <p style="font-size: 3rem;">📼</p>
+            <p>No videos processed yet</p>
+            <p class="text-muted">Videos will appear here once processed</p>
+        </div>
+    {% endif %}
+</div>
+
+<!-- Details Modal -->
+<div id="detailsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="background: #fff; max-width: 600px; margin: 5% auto; padding: 2rem; border-radius: 10px; max-height: 80vh; overflow-y: auto;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h3 id="modalTitle">Video Details</h3>
+            <button onclick="closeModal()" style="background: none; border: none; font-size: 1.5rem; cursor: pointer;">&times;</button>
+        </div>
+        <div id="modalContent">
+            <p>Loading...</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Search functionality
+    document.getElementById('searchInput').addEventListener('input', function(e) {
+        const query = e.target.value.toLowerCase();
+        const rows = document.querySelectorAll('#historyTable tbody tr');
+
+        rows.forEach(row => {
+            const text = row.textContent.toLowerCase();
+            row.style.display = text.includes(query) ? '' : 'none';
+        });
+    });
+
+    // Modal functions
+    function showDetails(videoId) {
+        document.getElementById('detailsModal').style.display = 'block';
+        document.getElementById('modalContent').innerHTML = '<p>Loading...</p>';
+
+        fetch(`/api/videos/${videoId}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    const video = data.data;
+                    document.getElementById('modalTitle').textContent = video.title;
+                    let statusBadge = '';
+                    if (video.status === 'completed') {
+                        statusBadge = '<span class="badge badge-success">Completed</span>';
+                    } else if (video.status === 'failed') {
+                        statusBadge = '<span class="badge badge-danger">Failed</span>';
+                        if (video.failure_reason) {
+                            statusBadge += ` <span class="badge badge-warning">${video.failure_reason}</span>`;
+                        }
+                        if (video.is_retryable === false) {
+                            statusBadge += ' <small class="text-muted">(재시도 불가)</small>';
+                        } else if (video.retry_count > 0) {
+                            statusBadge += ` <small class="text-muted">(재시도 ${video.retry_count}/3)</small>`;
+                        }
+                    } else {
+                        statusBadge = `<span class="badge badge-info">${video.status}</span>`;
+                    }
+
+                    document.getElementById('modalContent').innerHTML = `
+                        <p><strong>Channel:</strong> ${video.channel}</p>
+                        <p><strong>Video ID:</strong> ${video.video_id}</p>
+                        <p><strong>Status:</strong> ${statusBadge}</p>
+                        <p><strong>Processed:</strong> ${video.processed_at}</p>
+                        ${video.summary ? `<hr><p><strong>Summary:</strong></p><p>${video.summary}</p>` : ''}
+                        ${video.error_message ? `<hr><p><strong>Error:</strong></p><p style="color: #c00; background: #fee; padding: 0.5rem; border-radius: 4px;">${video.error_message}</p>` : ''}
+                        <hr>
+                        <a href="${video.video_url}" target="_blank" class="btn btn-primary">Watch on YouTube</a>
+                        ${video.audio_file_id ? `<a href="https://drive.google.com/file/d/${video.audio_file_id}/view" target="_blank" class="btn btn-secondary">Open in Drive</a>` : ''}
+                        ${video.status === 'failed' && video.is_retryable ? `<button onclick="retryFromHistory('${video.video_id}')" class="btn btn-secondary">Retry</button>` : ''}
+                    `;
+                } else {
+                    document.getElementById('modalContent').innerHTML = '<p>Error loading details</p>';
+                }
+            });
+    }
+
+    function closeModal() {
+        document.getElementById('detailsModal').style.display = 'none';
+    }
+
+    // Close modal on outside click
+    document.getElementById('detailsModal').addEventListener('click', function(e) {
+        if (e.target === this) closeModal();
+    });
+
+    // Retry from history modal
+    async function retryFromHistory(videoId) {
+        if (!confirm('이 영상을 재시도하시겠습니까?')) return;
+
+        document.getElementById('modalContent').innerHTML = '<p>재시도 중...</p>';
+
+        try {
+            const res = await fetch(`/api/retry/${videoId}`, { method: 'POST' });
+            const result = await res.json();
+
+            if (result.success) {
+                alert('재시도 성공!');
+                closeModal();
+                location.reload();
+            } else {
+                alert('재시도 실패: ' + result.message);
+                showDetails(videoId);
+            }
+        } catch (err) {
+            alert('오류: ' + err.message);
+        }
+    }
+
+    // Delete record
+    async function deleteRecord(videoId) {
+        if (!confirm('이 기록을 삭제하시겠습니까?\n삭제 후 Manual Process에서 다시 처리할 수 있습니다.')) return;
+
+        try {
+            const res = await fetch(`/api/delete-failed/${videoId}`, { method: 'DELETE' });
+            const result = await res.json();
+
+            if (result.success) {
+                location.reload();
+            } else {
+                alert('삭제 실패: ' + result.message);
+            }
+        } catch (err) {
+            alert('오류: ' + err.message);
+        }
+    }
+</script>
+{% endblock %}

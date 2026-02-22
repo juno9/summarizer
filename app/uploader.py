@@ -44,8 +44,8 @@ class GoogleDriveUploader:
     def _get_service(self):
         """구글 드라이브 API 서비스 생성"""
         creds = None
-        token_path = '/app/credentials/token.json'
-        creds_path = '/app/credentials/google_credentials.json'
+        token_path = 'credentials/token.json'
+        creds_path = 'credentials/google_credentials.json'
 
         # 1. 기존 토큰 확인
         if os.path.exists(token_path):
@@ -76,17 +76,17 @@ class GoogleDriveUploader:
                     logger.info("환경변수에서 OAuth 클라이언트 정보 로드")
                     # 토큰이 없으면 생성 필요
                     if not os.path.exists(token_path):
-                        logger.error("❌ 토큰 파일 없음: /app/credentials/token.json")
+                        logger.error("토큰 파일 없음: credentials/token.json")
                         logger.error("로컬에서 'python generate_token.py' 실행하여 토큰 생성 필요")
                         return None
                 elif os.path.exists(creds_path):
                     logger.info("JSON 파일에서 OAuth 클라이언트 정보 로드")
                     if not os.path.exists(token_path):
-                        logger.error("❌ 토큰 파일 없음")
+                        logger.error("토큰 파일 없음")
                         logger.error("로컬에서 'python generate_token.py' 실행하여 토큰 생성 필요")
                         return None
                 else:
-                    logger.error("❌ Google Drive 인증 정보 없음")
+                    logger.error("Google Drive 인증 정보 없음")
                     logger.error("방법 1: .env에 DRIVE_CLIENT_ID, DRIVE_CLIENT_SECRET 설정")
                     logger.error("방법 2: credentials/google_credentials.json 파일 추가")
                     return None
@@ -124,11 +124,11 @@ class GoogleDriveUploader:
                 fields='id'
             ).execute()
 
-            logger.info(f"✅ 업로드 완료: {filename} (ID: {file.get('id')})")
+            logger.info(f"업로드 완료: {filename} (ID: {file.get('id')})")
             return file.get('id')
 
         except Exception as e:
-            logger.error(f"❌ 업로드 실패: {e}")
+            logger.error(f"업로드 실패: {e}")
             return None
 
     def upload_text(self, file_path, filename):
@@ -158,9 +158,9 @@ class GoogleDriveUploader:
                 fields='id'
             ).execute()
 
-            logger.info(f"✅ 텍스트 업로드 완료: {filename} (ID: {file.get('id')})")
+            logger.info(f"텍스트 업로드 완료: {filename} (ID: {file.get('id')})")
             return file.get('id')
 
         except Exception as e:
-            logger.error(f"❌ 텍스트 업로드 실패: {e}")
+            logger.error(f"텍스트 업로드 실패: {e}")
             return None

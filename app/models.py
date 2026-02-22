@@ -2,7 +2,7 @@
 데이터베이스 모델
 """
 from datetime import datetime
-from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer, Boolean
+from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
@@ -10,10 +10,33 @@ import os
 Base = declarative_base()
 
 # DB 경로
-DB_PATH = os.getenv('DB_PATH', '/app/data/youtube_summarizer.db')
+DB_PATH = os.getenv('DB_PATH', 'data/youtube_summarizer.db')
 
 # 디렉토리 생성
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+
+class User(Base):
+    """사용자"""
+    __tablename__ = 'users'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    google_id = Column(String(100), unique=True, nullable=False)
+    email = Column(String(200), nullable=False)
+    name = Column(String(200))
+    picture = Column(String(500))
+    oauth_token = Column(Text)  # JSON string of OAuth credentials (youtube.readonly)
+    created_at = Column(DateTime, default=datetime.now)
+    last_login = Column(DateTime, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'email': self.email,
+            'name': self.name,
+            'picture': self.picture,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 class Channel(Base):
@@ -21,7 +44,8 @@ class Channel(Base):
     __tablename__ = 'channels'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    channel_url = Column(String(500), unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # nullable: 기존 데이터 호환
+    channel_url = Column(String(500), nullable=False)
     channel_name = Column(String(200))
     is_active = Column(Boolean, default=True)
     added_at = Column(DateTime, default=datetime.now)
@@ -43,7 +67,8 @@ class ProcessedVideo(Base):
     __tablename__ = 'processed_videos'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    video_id = Column(String(20), unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # nullable: 기존 데이터 호환
+    video_id = Column(String(20), nullable=False)
     title = Column(String(500))
     channel = Column(String(200))
     video_url = Column(String(500))
@@ -51,6 +76,9 @@ class ProcessedVideo(Base):
     audio_file_id = Column(String(100))  # 구글 드라이브 파일 ID
     status = Column(String(50), default='completed')  # pending, processing, completed, failed
     error_message = Column(Text)
+    failure_reason = Column(String(50))  # membership, rate_limit, network, auth, unknown
+    retry_count = Column(Integer, default=0)
+    is_retryable = Column(Boolean, default=True)  # 재시도 가능 여부
     processed_at = Column(DateTime, default=datetime.now)
 
     def to_dict(self):
@@ -64,6 +92,9 @@ class ProcessedVideo(Base):
             'audio_file_id': self.audio_file_id,
             'status': self.status,
             'error_message': self.error_message,
+            'failure_reason': self.failure_reason,
+            'retry_count': self.retry_count,
+            'is_retryable': self.is_retryable,
             'processed_at': self.processed_at.isoformat() if self.processed_at else None
         }
 
@@ -136,24 +167,104 @@ class Database:
         self.session = Session()
         self._initialized = True
 
+        # 마이그레이션
+        self._migrate()
+
+    def _migrate(self):
+        """기존 DB에 컬럼 추가 마이그레이션"""
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        # processed_videos 컬럼 확인
+        cursor.execute("PRAGMA table_info(processed_videos)")
+        pv_columns = [col[1] for col in cursor.fetchall()]
+
+        if 'failure_reason' not in pv_columns:
+            cursor.execute("ALTER TABLE processed_videos ADD COLUMN failure_reason VARCHAR(50)")
+        if 'retry_count' not in pv_columns:
+            cursor.execute("ALTER TABLE processed_videos ADD COLUMN retry_count INTEGER DEFAULT 0")
+        if 'is_retryable' not in pv_columns:
+            cursor.execute("ALTER TABLE processed_videos ADD COLUMN is_retryable BOOLEAN DEFAULT 1")
+        if 'user_id' not in pv_columns:
+            cursor.execute("ALTER TABLE processed_videos ADD COLUMN user_id INTEGER")
+
+        # channels 컬럼 확인
+        cursor.execute("PRAGMA table_info(channels)")
+        ch_columns = [col[1] for col in cursor.fetchall()]
+
+        if 'user_id' not in ch_columns:
+            cursor.execute("ALTER TABLE channels ADD COLUMN user_id INTEGER")
+
+        # channel_url unique 제약 제거 (user_id별로 같은 채널 등록 가능)
+        # SQLite는 unique 제약 변경이 어려우므로 테이블 재생성 방식 사용
+        cursor.execute("PRAGMA table_info(channels)")
+        # 기존 unique 인덱스 확인
+        cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='channels'")
+        indexes = cursor.fetchall()
+        for idx_name, idx_sql in indexes:
+            if idx_sql and 'channel_url' in idx_sql and 'UNIQUE' in idx_sql.upper():
+                cursor.execute(f"DROP INDEX IF EXISTS {idx_name}")
+
+        conn.commit()
+        conn.close()
+
     def get_session(self):
         return self.session
 
+    # User 관련 메서드
+    def get_or_create_user(self, google_id, email, name=None, picture=None, oauth_token=None):
+        """구글 로그인으로 유저 생성 또는 업데이트"""
+        user = self.session.query(User).filter_by(google_id=google_id).first()
+        if user:
+            user.email = email
+            user.name = name
+            user.picture = picture
+            user.last_login = datetime.now()
+            if oauth_token:
+                user.oauth_token = oauth_token
+        else:
+            user = User(
+                google_id=google_id,
+                email=email,
+                name=name,
+                picture=picture,
+                oauth_token=oauth_token,
+            )
+            self.session.add(user)
+        self.session.commit()
+        return user
+
+    def get_user(self, user_id):
+        """유저 조회"""
+        return self.session.query(User).filter_by(id=user_id).first()
+
+    def update_user_token(self, user_id, oauth_token):
+        """유저 OAuth 토큰 업데이트"""
+        user = self.session.query(User).filter_by(id=user_id).first()
+        if user:
+            user.oauth_token = oauth_token
+            self.session.commit()
+
     # Channel 관련 메서드
-    def add_channel(self, channel_url, channel_name=None):
+    def add_channel(self, channel_url, channel_name=None, user_id=None):
         """채널 추가"""
-        existing = self.session.query(Channel).filter_by(channel_url=channel_url).first()
-        if existing:
+        query = self.session.query(Channel).filter_by(channel_url=channel_url)
+        if user_id:
+            query = query.filter_by(user_id=user_id)
+        if query.first():
             return None
 
-        channel = Channel(channel_url=channel_url, channel_name=channel_name)
+        channel = Channel(channel_url=channel_url, channel_name=channel_name, user_id=user_id)
         self.session.add(channel)
         self.session.commit()
         return channel
 
-    def get_channels(self, active_only=False):
+    def get_channels(self, active_only=False, user_id=None):
         """채널 목록 조회"""
         query = self.session.query(Channel)
+        if user_id:
+            query = query.filter_by(user_id=user_id)
         if active_only:
             query = query.filter_by(is_active=True)
         return query.order_by(Channel.added_at.desc()).all()
@@ -178,7 +289,9 @@ class Database:
 
     # ProcessedVideo 관련 메서드
     def add_processed_video(self, video_id, title, channel, video_url=None,
-                           summary=None, audio_file_id=None, status='completed'):
+                           summary=None, audio_file_id=None, status='completed',
+                           error_message=None, failure_reason=None, is_retryable=True,
+                           user_id=None):
         """처리된 영상 추가"""
         video = ProcessedVideo(
             video_id=video_id,
@@ -187,29 +300,100 @@ class Database:
             video_url=video_url or f"https://www.youtube.com/watch?v={video_id}",
             summary=summary,
             audio_file_id=audio_file_id,
-            status=status
+            status=status,
+            error_message=error_message,
+            failure_reason=failure_reason,
+            is_retryable=is_retryable,
+            user_id=user_id,
         )
         self.session.add(video)
         self.session.commit()
         return video
 
-    def get_processed_videos(self, limit=50, offset=0):
+    def get_processed_videos(self, limit=50, offset=0, user_id=None):
         """처리된 영상 목록"""
-        return self.session.query(ProcessedVideo)\
-            .order_by(ProcessedVideo.processed_at.desc())\
+        query = self.session.query(ProcessedVideo)
+        if user_id:
+            query = query.filter_by(user_id=user_id)
+        return query.order_by(ProcessedVideo.processed_at.desc())\
             .offset(offset)\
             .limit(limit)\
             .all()
 
-    def is_video_processed(self, video_id):
+    def is_video_processed(self, video_id, user_id=None):
         """영상 처리 여부 확인"""
-        return self.session.query(ProcessedVideo).filter_by(video_id=video_id).first() is not None
+        query = self.session.query(ProcessedVideo).filter_by(video_id=video_id)
+        if user_id:
+            query = query.filter_by(user_id=user_id)
+        return query.first() is not None
 
-    def get_stats(self):
+    def get_retryable_videos(self, max_retries=3):
+        """재시도 가능한 실패 영상 목록"""
+        return self.session.query(ProcessedVideo)\
+            .filter_by(status='failed', is_retryable=True)\
+            .filter(ProcessedVideo.retry_count < max_retries)\
+            .order_by(ProcessedVideo.processed_at.desc())\
+            .all()
+
+    def get_failed_videos(self, include_non_retryable=False):
+        """실패한 영상 목록 조회"""
+        query = self.session.query(ProcessedVideo).filter_by(status='failed')
+        if not include_non_retryable:
+            query = query.filter_by(is_retryable=True)
+        return query.order_by(ProcessedVideo.processed_at.desc()).all()
+
+    def update_video_for_retry(self, video_id):
+        """재시도를 위해 영상 상태 업데이트"""
+        video = self.session.query(ProcessedVideo).filter_by(video_id=video_id).first()
+        if video and video.is_retryable:
+            video.retry_count += 1
+            video.status = 'pending'
+            self.session.commit()
+            return video
+        return None
+
+    def update_video_status(self, video_id, status, error_message=None,
+                           failure_reason=None, is_retryable=None, summary=None, audio_file_id=None):
+        """영상 상태 업데이트"""
+        video = self.session.query(ProcessedVideo).filter_by(video_id=video_id).first()
+        if video:
+            video.status = status
+            video.processed_at = datetime.now()
+            if error_message is not None:
+                video.error_message = error_message
+            if failure_reason is not None:
+                video.failure_reason = failure_reason
+            if is_retryable is not None:
+                video.is_retryable = is_retryable
+            if summary is not None:
+                video.summary = summary
+            if audio_file_id is not None:
+                video.audio_file_id = audio_file_id
+            self.session.commit()
+            return video
+        return None
+
+    def delete_video_record(self, video_id):
+        """영상 기록 삭제 (재처리를 위해)"""
+        video = self.session.query(ProcessedVideo).filter_by(video_id=video_id).first()
+        if video:
+            self.session.delete(video)
+            self.session.commit()
+            return True
+        return False
+
+    def get_stats(self, user_id=None):
         """통계 조회"""
-        total_processed = self.session.query(ProcessedVideo).count()
-        total_channels = self.session.query(Channel).filter_by(is_active=True).count()
-        recent_count = self.session.query(ProcessedVideo)\
+        pv_query = self.session.query(ProcessedVideo)
+        ch_query = self.session.query(Channel).filter_by(is_active=True)
+
+        if user_id:
+            pv_query = pv_query.filter_by(user_id=user_id)
+            ch_query = ch_query.filter_by(user_id=user_id)
+
+        total_processed = pv_query.count()
+        total_channels = ch_query.count()
+        recent_count = pv_query\
             .filter(ProcessedVideo.processed_at >= datetime.now().replace(hour=0, minute=0, second=0))\
             .count()
 

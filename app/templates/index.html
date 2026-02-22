@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - YouTube Summarizer{% endblock %}
+
+{% block content %}
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>{{ stats.total_processed }}</h3>
+        <p>Total Processed</p>
+    </div>
+    <div class="stat-card green">
+        <h3>{{ stats.active_channels }}</h3>
+        <p>Active Channels</p>
+    </div>
+    <div class="stat-card orange">
+        <h3>{{ stats.today_processed }}</h3>
+        <p>Today</p>
+    </div>
+</div>
+
+<!-- Recent Videos 카드 그리드 -->
+<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem;">
+        <h2>최근 요약 영상</h2>
+        <a href="/history" class="btn btn-sm btn-secondary">전체 보기</a>
+    </div>
+
+    {% if recent_videos %}
+    <div class="video-grid">
+        {% for video in recent_videos %}
+        <div class="video-card" onclick="openModal({{ loop.index0 }})"
+             data-video='{{ {
+                "video_id": video.video_id,
+                "title": video.title,
+                "channel": video.channel,
+                "video_url": video.video_url,
+                "summary": video.summary or "",
+                "status": video.status,
+                "processed_at": video.processed_at|timeago,
+                "audio_file_id": video.audio_file_id or ""
+             }|tojson }}'>
+            <div class="video-thumb">
+                <img src="https://img.youtube.com/vi/{{ video.video_id }}/hqdefault.jpg"
+                     onerror="this.src='https://img.youtube.com/vi/{{ video.video_id }}/mqdefault.jpg'"
+                     alt="{{ video.title }}">
+                <div class="video-thumb-overlay">
+                    <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+                        <circle cx="20" cy="20" r="20" fill="rgba(0,0,0,0.6)"/>
+                        <path d="M16 13l11 7-11 7V13z" fill="white"/>
+                    </svg>
+                </div>
+                {% if video.status == 'failed' %}
+                <span class="thumb-badge badge-danger">실패</span>
+                {% elif video.status == 'processing' %}
+                <span class="thumb-badge badge-info">처리중</span>
+                {% endif %}
+            </div>
+            <div class="video-info">
+                <p class="video-title">{{ video.title }}</p>
+                <p class="video-meta">{{ video.channel }} · {{ video.processed_at|timeago }}</p>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p style="font-size:2.5rem;">📹</p>
+        <p>아직 처리된 영상이 없어요</p>
+        <p class="text-muted">채널을 추가하면 새 영상이 자동으로 요약됩니다</p>
+        <a href="/channels" class="btn btn-primary" style="margin-top:1rem;">채널 추가하기</a>
+    </div>
+    {% endif %}
+</div>
+
+<!-- 하단 2열 -->
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem;">
+    <!-- 모니터링 채널 -->
+    <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+            <h2>모니터링 채널</h2>
+            <a href="/channels" class="btn btn-sm btn-secondary">관리</a>
+        </div>
+        {% if channels %}
+            <div style="display:flex; flex-direction:column; gap:0.5rem;">
+                {% for channel in channels %}
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0; border-bottom:1px solid #f0f0f0;">
+                    <a href="{{ channel.channel_url }}" target="_blank" style="color:#333; text-decoration:none; font-size:0.9rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px;">
+                        {{ channel.channel_name or channel.channel_url[:30] }}
+                    </a>
+                    {% if channel.is_active %}
+                        <span class="badge badge-success">Active</span>
+                    {% else %}
+                        <span class="badge badge-warning">Paused</span>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-state" style="padding:1.5rem;">
+                <p>등록된 채널이 없어요</p>
+                <a href="/channels" class="btn btn-primary" style="margin-top:0.75rem;">채널 추가</a>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- Manual Process -->
+    <div class="card">
+        <h2 style="margin-bottom:1rem;">URL 직접 처리</h2>
+        <form id="manualProcessForm">
+            <div class="form-group">
+                <label for="videoUrl">YouTube 영상 URL</label>
+                <input type="url" id="videoUrl" placeholder="https://www.youtube.com/watch?v=..." required>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;">요약 시작</button>
+        </form>
+        <p class="text-muted" style="margin-top:0.75rem; font-size:0.85rem;">
+            채널 등록 없이 특정 영상만 바로 요약합니다
+        </p>
+        <div id="processStatus" style="display:none; margin-top:1rem; padding:0.75rem; border-radius:6px; font-size:0.9rem;"></div>
+    </div>
+</div>
+
+<!-- 영상 상세 팝업 -->
+<div id="videoModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; overflow-y:auto;">
+    <div style="background:#fff; max-width:680px; margin:3% auto; border-radius:12px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+        <!-- 썸네일 헤더 -->
+        <div style="position:relative;">
+            <img id="modalThumb" src="" alt="" style="width:100%; height:260px; object-fit:cover; display:block;">
+            <div style="position:absolute; inset:0; background:linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 50%);"></div>
+            <button onclick="closeModal()" style="position:absolute; top:1rem; right:1rem; background:rgba(0,0,0,0.5); border:none; color:#fff; width:36px; height:36px; border-radius:50%; font-size:1.2rem; cursor:pointer; display:flex; align-items:center; justify-content:center;">&times;</button>
+            <div style="position:absolute; bottom:1rem; left:1.5rem; right:1.5rem;">
+                <p id="modalChannel" style="color:rgba(255,255,255,0.8); font-size:0.85rem; margin-bottom:0.3rem;"></p>
+                <h3 id="modalTitle" style="color:#fff; font-size:1.15rem; line-height:1.4;"></h3>
+            </div>
+        </div>
+
+        <!-- 본문 -->
+        <div style="padding:1.5rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem;">
+                <span id="modalTime" style="color:#888; font-size:0.85rem;"></span>
+                <div style="display:flex; gap:0.5rem;">
+                    <a id="modalYoutubeLink" href="#" target="_blank" class="btn btn-sm btn-danger">YouTube에서 보기</a>
+                    <a id="modalDriveLink" href="#" target="_blank" class="btn btn-sm btn-secondary" style="display:none;">Drive 열기</a>
+                </div>
+            </div>
+
+            <div id="modalSummarySection">
+                <h4 style="color:#1a1a2e; margin-bottom:0.75rem; font-size:1rem;">요약</h4>
+                <div id="modalSummary" style="color:#444; line-height:1.8; font-size:0.95rem; white-space:pre-wrap; background:#f8f9fa; padding:1rem; border-radius:8px; max-height:300px; overflow-y:auto;"></div>
+            </div>
+
+            <div id="modalNoSummary" style="display:none; text-align:center; padding:2rem; color:#999;">
+                <p>요약 내용이 없습니다</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+    .video-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 1rem;
+    }
+
+    .video-card {
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid #eee;
+        cursor: pointer;
+        transition: transform 0.2s, box-shadow 0.2s;
+        background: #fff;
+    }
+
+    .video-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    }
+
+    .video-thumb {
+        position: relative;
+        aspect-ratio: 16/9;
+        overflow: hidden;
+        background: #000;
+    }
+
+    .video-thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+        transition: transform 0.3s;
+    }
+
+    .video-card:hover .video-thumb img {
+        transform: scale(1.04);
+    }
+
+    .video-thumb-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        transition: opacity 0.2s;
+    }
+
+    .video-card:hover .video-thumb-overlay {
+        opacity: 1;
+    }
+
+    .thumb-badge {
+        position: absolute;
+        top: 0.5rem;
+        left: 0.5rem;
+        padding: 0.2rem 0.5rem;
+        border-radius: 3px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    .video-info {
+        padding: 0.75rem;
+    }
+
+    .video-title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #1a1a2e;
+        line-height: 1.4;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        margin-bottom: 0.4rem;
+    }
+
+    .video-meta {
+        font-size: 0.78rem;
+        color: #888;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+</style>
+
+<script>
+    const videoData = [
+        {% for video in recent_videos %}
+        {
+            video_id: "{{ video.video_id }}",
+            title: {{ video.title|tojson }},
+            channel: {{ video.channel|tojson }},
+            video_url: "{{ video.video_url }}",
+            summary: {{ (video.summary or "")|tojson }},
+            status: "{{ video.status }}",
+            processed_at: "{{ video.processed_at|timeago }}",
+            audio_file_id: "{{ video.audio_file_id or '' }}"
+        }{% if not loop.last %},{% endif %}
+        {% endfor %}
+    ];
+
+    function openModal(index) {
+        const v = videoData[index];
+
+        document.getElementById('modalThumb').src = `https://img.youtube.com/vi/${v.video_id}/hqdefault.jpg`;
+        document.getElementById('modalTitle').textContent = v.title;
+        document.getElementById('modalChannel').textContent = v.channel;
+        document.getElementById('modalTime').textContent = v.processed_at + ' 처리됨';
+        document.getElementById('modalYoutubeLink').href = v.video_url;
+
+        const driveLink = document.getElementById('modalDriveLink');
+        if (v.audio_file_id) {
+            driveLink.href = `https://drive.google.com/file/d/${v.audio_file_id}/view`;
+            driveLink.style.display = '';
+        } else {
+            driveLink.style.display = 'none';
+        }
+
+        if (v.summary) {
+            document.getElementById('modalSummary').textContent = v.summary;
+            document.getElementById('modalSummarySection').style.display = '';
+            document.getElementById('modalNoSummary').style.display = 'none';
+        } else {
+            document.getElementById('modalSummarySection').style.display = 'none';
+            document.getElementById('modalNoSummary').style.display = '';
+        }
+
+        document.getElementById('videoModal').style.display = 'block';
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeModal() {
+        document.getElementById('videoModal').style.display = 'none';
+        document.body.style.overflow = '';
+    }
+
+    document.getElementById('videoModal').addEventListener('click', function(e) {
+        if (e.target === this) closeModal();
+    });
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeModal();
+    });
+
+    // Manual Process
+    document.getElementById('manualProcessForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const videoUrl = document.getElementById('videoUrl').value;
+        const btn = this.querySelector('button[type="submit"]');
+        const status = document.getElementById('processStatus');
+
+        btn.textContent = '처리중...';
+        btn.disabled = true;
+        status.style.display = 'block';
+        status.style.background = '#fff3cd';
+        status.style.color = '#856404';
+        status.textContent = '영상 분석 중입니다. 잠시 기다려주세요...';
+
+        try {
+            const res = await fetch('/api/process', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({video_url: videoUrl})
+            });
+            const data = await res.json();
+
+            if (data.status === 'completed') {
+                status.style.background = '#d4edda';
+                status.style.color = '#155724';
+                status.textContent = '완료: ' + data.title;
+                document.getElementById('videoUrl').value = '';
+                setTimeout(() => location.reload(), 1500);
+            } else if (data.status === 'failed') {
+                status.style.background = '#f8d7da';
+                status.style.color = '#721c24';
+                status.textContent = '실패: ' + (data.failure_reason_display || data.error);
+            } else if (data.error) {
+                status.style.background = '#f8d7da';
+                status.style.color = '#721c24';
+                status.textContent = '에러: ' + data.error;
+            }
+        } catch (err) {
+            status.style.background = '#f8d7da';
+            status.style.color = '#721c24';
+            status.textContent = '요청 실패: ' + err.message;
+        } finally {
+            btn.textContent = '요약 시작';
+            btn.disabled = false;
+        }
+    });
+</script>
+{% endblock %}

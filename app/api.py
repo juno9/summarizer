@@ -241,7 +241,11 @@ def check_video():
 # ========== 처리 요청 ==========
 @api.route('/process', methods=['POST'])
 def request_processing():
-    """영상 처리 요청"""
+    """영상 처리 요청 - 즉시 처리"""
+    import yt_dlp
+    from processor import SimpleProcessor
+    from error_classifier import get_failure_reason_display
+
     data = request.get_json()
 
     if not data:
@@ -256,21 +260,76 @@ def request_processing():
         return jsonify({'success': False, 'error': 'Invalid YouTube video URL'}), 400
 
     # 이미 처리되었는지 확인
-    if db.is_video_processed(video_id):
-        return jsonify({
-            'success': False,
-            'error': 'Video already processed',
-            'video_id': video_id
-        }), 409
+    from models import ProcessedVideo
+    session = db.get_session()
+    existing = session.query(ProcessedVideo).filter_by(video_id=video_id).first()
 
-    # TODO: 큐에 추가
+    if existing:
+        if existing.status == 'completed':
+            return jsonify({
+                'success': False,
+                'error': '이미 처리 완료된 영상입니다',
+                'video_id': video_id
+            }), 409
+        else:
+            # 실패한 영상이면 기록 삭제 후 재처리
+            logger.info(f"실패 기록 삭제 후 재처리: {video_id}")
+            db.delete_video_record(video_id)
+
     db.add_log('INFO', f'API: 처리 요청 - {video_url}', 'api')
 
-    return jsonify({
-        'success': True,
-        'message': 'Video queued for processing',
-        'video_id': video_id
-    }), 202
+    try:
+        # 영상 정보 추출
+        ydl_opts = {'quiet': True, 'extract_flat': False}
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            title = info.get('title', 'Unknown')
+            channel = info.get('uploader', 'Unknown')
+
+        video = {
+            'id': video_id,
+            'title': title,
+            'url': video_url,
+            'channel': channel
+        }
+
+        logger.info(f"수동 처리 시작: {title}")
+
+        # 처리 실행
+        from config import Config
+        config = Config()
+        processor = SimpleProcessor(config)
+        success = processor.process_video(video)
+
+        if success:
+            db.add_log('INFO', f'수동 처리 완료: {title}', 'api')
+            return jsonify({
+                'status': 'completed',
+                'video_id': video_id,
+                'title': title
+            })
+        else:
+            # 실패 시 DB에서 실패 정보 조회
+            from models import ProcessedVideo
+            session = db.get_session()
+            failed_video = session.query(ProcessedVideo).filter_by(video_id=video_id).first()
+            error_msg = failed_video.error_message if failed_video else '처리 실패'
+            failure_reason = failed_video.failure_reason if failed_video else None
+            return jsonify({
+                'status': 'failed',
+                'video_id': video_id,
+                'title': title,
+                'error': error_msg,
+                'failure_reason': failure_reason,
+                'failure_reason_display': get_failure_reason_display(failure_reason) if failure_reason else None
+            }), 500
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"수동 처리 에러: {error_msg}")
+        db.add_log('ERROR', f'수동 처리 실패: {error_msg}', 'api')
+        return jsonify({'status': 'failed', 'error': error_msg}), 500
 
 
 # ========== 로그 ==========
