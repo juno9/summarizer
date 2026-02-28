@@ -1,0 +1,376 @@
+{% extends "base.html" %}
+
+{% block title %}기간별 요약 - YouTube Summarizer{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>기간별 영상 일괄 요약</h2>
+    <p style="color:#555; margin-bottom:1.5rem; font-size:0.95rem;">
+        채널과 기간을 지정하면 해당 기간에 올라온 영상을 검색하고 일괄 요약합니다.
+    </p>
+
+    <div style="display:grid; grid-template-columns:2fr 1fr 1fr auto; gap:1rem; align-items:flex-end; flex-wrap:wrap;">
+        <div class="form-group" style="margin-bottom:0;">
+            <label>채널</label>
+            <select id="channelSelect" style="width:100%;padding:0.75rem;border:1px solid #ddd;border-radius:5px;font-size:1rem;">
+                <option value="">-- 채널 선택 또는 직접 입력 --</option>
+                {% for ch in channels %}
+                <option value="{{ ch.channel_url }}">{{ ch.channel_name or ch.channel_url }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+            <label>시작일</label>
+            <input type="date" id="startDate" style="width:100%;padding:0.75rem;border:1px solid #ddd;border-radius:5px;font-size:1rem;">
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+            <label>종료일</label>
+            <input type="date" id="endDate" style="width:100%;padding:0.75rem;border:1px solid #ddd;border-radius:5px;font-size:1rem;">
+        </div>
+        <div style="margin-bottom:0;">
+            <button id="fetchBtn" class="btn btn-primary" style="padding:0.75rem 1.5rem; white-space:nowrap;">영상 검색</button>
+        </div>
+    </div>
+
+    <div style="margin-top:0.75rem;">
+        <input type="url" id="channelUrlInput" placeholder="또는 채널 URL 직접 입력 (https://www.youtube.com/@channelname)"
+               style="width:100%;padding:0.75rem;border:1px solid #ddd;border-radius:5px;font-size:0.9rem;">
+    </div>
+
+    <!-- 빠른 기간 버튼 -->
+    <div style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+        <span style="color:#888; font-size:0.85rem; align-self:center;">빠른 선택:</span>
+        <button class="btn btn-sm" style="background:#f0f0f0;" onclick="setDateRange(7)">최근 1주</button>
+        <button class="btn btn-sm" style="background:#f0f0f0;" onclick="setDateRange(30)">최근 1개월</button>
+        <button class="btn btn-sm" style="background:#f0f0f0;" onclick="setDateRange(90)">최근 3개월</button>
+        <button class="btn btn-sm" style="background:#f0f0f0;" onclick="setDateRange(180)">최근 6개월</button>
+        <button class="btn btn-sm" style="background:#f0f0f0;" onclick="setDateRange(365)">최근 1년</button>
+    </div>
+</div>
+
+<!-- 검색 결과 -->
+<div id="resultsSection" style="display:none;">
+    <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:0.75rem;">
+            <h2 id="resultTitle">검색 결과</h2>
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <button id="selectAllBtn" class="btn btn-sm btn-secondary" onclick="toggleSelectAll()">전체 선택</button>
+                <button id="processSelectedBtn" class="btn btn-sm btn-primary" onclick="startBatch('selected')" disabled>선택 요약</button>
+                <button id="processAllBtn" class="btn btn-sm" style="background:#28a745;color:#fff;" onclick="startBatch('unprocessed')">미처리 전체 요약</button>
+            </div>
+        </div>
+
+        <div id="videoList"></div>
+    </div>
+</div>
+
+<!-- 처리 진행 상황 -->
+<div id="progressSection" style="display:none;">
+    <div class="card">
+        <h2>처리 진행 중</h2>
+
+        <div style="margin:1rem 0;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:0.4rem;">
+                <span id="progressLabel" style="font-size:0.9rem; color:#555;">대기 중...</span>
+                <span id="progressCount" style="font-size:0.9rem; font-weight:600;">0 / 0</span>
+            </div>
+            <div style="background:#eee; border-radius:8px; height:12px; overflow:hidden;">
+                <div id="progressBar" style="background:linear-gradient(90deg,#667eea,#764ba2); height:100%; width:0%; transition:width 0.3s; border-radius:8px;"></div>
+            </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:1rem; margin-bottom:1rem;">
+            <div style="text-align:center; padding:0.75rem; background:#d4edda; border-radius:8px;">
+                <div id="successCount" style="font-size:1.5rem; font-weight:700; color:#155724;">0</div>
+                <div style="font-size:0.8rem; color:#155724;">성공</div>
+            </div>
+            <div style="text-align:center; padding:0.75rem; background:#f8d7da; border-radius:8px;">
+                <div id="failedCount" style="font-size:1.5rem; font-weight:700; color:#721c24;">0</div>
+                <div style="font-size:0.8rem; color:#721c24;">실패</div>
+            </div>
+            <div style="text-align:center; padding:0.75rem; background:#fff3cd; border-radius:8px;">
+                <div id="remainCount" style="font-size:1.5rem; font-weight:700; color:#856404;">0</div>
+                <div style="font-size:0.8rem; color:#856404;">남음</div>
+            </div>
+        </div>
+
+        <div id="currentVideo" style="font-size:0.9rem; color:#555; padding:0.5rem; background:#f8f9fa; border-radius:5px;"></div>
+
+        <!-- 완료 결과 -->
+        <div id="completedResults" style="display:none; margin-top:1rem;">
+            <h3 style="margin-bottom:0.75rem; font-size:1rem;">처리 결과</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>업로드일</th>
+                        <th>제목</th>
+                        <th>결과</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // ===== 날짜 초기화 =====
+    const today = new Date();
+    document.getElementById('endDate').value = today.toISOString().split('T')[0];
+    const monthAgo = new Date(today);
+    monthAgo.setMonth(monthAgo.getMonth() - 1);
+    document.getElementById('startDate').value = monthAgo.toISOString().split('T')[0];
+
+    function setDateRange(days) {
+        const end = new Date();
+        const start = new Date();
+        start.setDate(start.getDate() - days);
+        document.getElementById('startDate').value = start.toISOString().split('T')[0];
+        document.getElementById('endDate').value = end.toISOString().split('T')[0];
+    }
+
+    function getChannelUrl() {
+        const manual = document.getElementById('channelUrlInput').value.trim();
+        const select = document.getElementById('channelSelect').value;
+        return manual || select;
+    }
+
+    // 드롭다운 선택 시 직접 입력란 초기화
+    document.getElementById('channelSelect').addEventListener('change', function() {
+        if (this.value) document.getElementById('channelUrlInput').value = '';
+    });
+    document.getElementById('channelUrlInput').addEventListener('input', function() {
+        if (this.value) document.getElementById('channelSelect').value = '';
+    });
+
+    // ===== 영상 검색 =====
+    let fetchedVideos = [];
+
+    document.getElementById('fetchBtn').addEventListener('click', fetchVideos);
+
+    async function fetchVideos() {
+        const channelUrl = getChannelUrl();
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+
+        if (!channelUrl) { alert('채널을 선택하거나 URL을 입력해주세요.'); return; }
+        if (!startDate || !endDate) { alert('시작일과 종료일을 입력해주세요.'); return; }
+
+        const btn = document.getElementById('fetchBtn');
+        btn.textContent = '검색 중...';
+        btn.disabled = true;
+        document.getElementById('resultsSection').style.display = 'none';
+
+        try {
+            const res = await fetch('/api/batch/fetch', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({channel_url: channelUrl, start_date: startDate, end_date: endDate})
+            });
+            const data = await res.json();
+
+            if (!res.ok) { alert('오류: ' + (data.error || '알 수 없는 오류')); return; }
+
+            fetchedVideos = data.videos || [];
+            renderVideoList(data);
+
+        } catch (e) {
+            alert('요청 실패: ' + e.message);
+        } finally {
+            btn.textContent = '영상 검색';
+            btn.disabled = false;
+        }
+    }
+
+    function renderVideoList(data) {
+        const section = document.getElementById('resultsSection');
+        const listEl = document.getElementById('videoList');
+        const titleEl = document.getElementById('resultTitle');
+
+        titleEl.textContent = `검색 결과 — 총 ${data.total}개 (미처리: ${data.unprocessed}개)`;
+
+        if (data.total === 0) {
+            listEl.innerHTML = '<div class="empty-state"><p style="font-size:2rem;">검색 결과 없음</p><p class="text-muted">해당 기간에 올라온 영상이 없습니다.</p></div>';
+            section.style.display = 'block';
+            return;
+        }
+
+        const rows = data.videos.map(v => `
+            <tr data-video-id="${v.id}" data-processed="${v.is_processed}">
+                <td style="width:36px;">
+                    ${!v.is_processed ? `<input type="checkbox" class="video-checkbox" value="${v.id}" style="width:16px;height:16px;">` : ''}
+                </td>
+                <td style="width:110px; white-space:nowrap;" class="text-muted">${v.upload_date_display}</td>
+                <td>
+                    <a href="${v.url}" target="_blank" style="text-decoration:none; color:#333; font-weight:500;">${escapeHtml(v.title)}</a>
+                </td>
+                <td style="width:90px;">
+                    ${v.is_processed
+                        ? '<span class="badge badge-success">완료</span>'
+                        : '<span class="badge badge-warning">미처리</span>'}
+                </td>
+            </tr>
+        `).join('');
+
+        listEl.innerHTML = `
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:36px;"></th>
+                        <th style="width:110px;">업로드일</th>
+                        <th>제목</th>
+                        <th style="width:90px;">상태</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+
+        // 체크박스 이벤트
+        document.querySelectorAll('.video-checkbox').forEach(cb => {
+            cb.addEventListener('change', updateProcessSelectedBtn);
+        });
+
+        document.getElementById('processAllBtn').style.display = data.unprocessed > 0 ? '' : 'none';
+        section.style.display = 'block';
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    let selectAllState = false;
+    function toggleSelectAll() {
+        selectAllState = !selectAllState;
+        document.querySelectorAll('.video-checkbox').forEach(cb => cb.checked = selectAllState);
+        document.getElementById('selectAllBtn').textContent = selectAllState ? '전체 해제' : '전체 선택';
+        updateProcessSelectedBtn();
+    }
+
+    function updateProcessSelectedBtn() {
+        const checked = document.querySelectorAll('.video-checkbox:checked').length;
+        document.getElementById('processSelectedBtn').disabled = checked === 0;
+        document.getElementById('processSelectedBtn').textContent = checked > 0 ? `선택 요약 (${checked}개)` : '선택 요약';
+    }
+
+    // ===== 배치 처리 =====
+    let currentJobId = null;
+    let pollInterval = null;
+
+    async function startBatch(mode) {
+        const channelUrl = getChannelUrl();
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+
+        let videoIds = null;
+        if (mode === 'selected') {
+            videoIds = Array.from(document.querySelectorAll('.video-checkbox:checked')).map(cb => cb.value);
+            if (!videoIds.length) { alert('영상을 선택해주세요.'); return; }
+        }
+
+        const label = mode === 'selected' ? `${videoIds.length}개 선택 영상` : '미처리 전체 영상';
+        if (!confirm(`${label}을 요약 처리하시겠습니까?\n영상당 약 1~3분 소요됩니다.`)) return;
+
+        try {
+            const res = await fetch('/api/batch/process', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    channel_url: channelUrl,
+                    start_date: startDate,
+                    end_date: endDate,
+                    video_ids: videoIds,
+                })
+            });
+            const data = await res.json();
+            if (!res.ok) { alert('오류: ' + (data.error || '알 수 없는 오류')); return; }
+
+            currentJobId = data.job_id;
+            showProgress();
+            pollStatus();
+
+        } catch (e) {
+            alert('요청 실패: ' + e.message);
+        }
+    }
+
+    function showProgress() {
+        document.getElementById('progressSection').style.display = 'block';
+        document.getElementById('completedResults').style.display = 'none';
+        document.getElementById('progressBar').style.width = '0%';
+        document.getElementById('progressCount').textContent = '0 / 0';
+        document.getElementById('successCount').textContent = '0';
+        document.getElementById('failedCount').textContent = '0';
+        document.getElementById('remainCount').textContent = '0';
+        document.getElementById('progressLabel').textContent = '시작 중...';
+        window.scrollTo({top: document.getElementById('progressSection').offsetTop - 20, behavior: 'smooth'});
+    }
+
+    function pollStatus() {
+        if (pollInterval) clearInterval(pollInterval);
+        pollInterval = setInterval(async () => {
+            if (!currentJobId) return;
+            try {
+                const res = await fetch(`/api/batch/status/${currentJobId}`);
+                const job = await res.json();
+                updateProgressUI(job);
+                if (job.status === 'completed' || job.status === 'failed') {
+                    clearInterval(pollInterval);
+                }
+            } catch (e) {
+                console.error('상태 조회 실패:', e);
+            }
+        }, 3000);
+    }
+
+    function updateProgressUI(job) {
+        const total = job.total || 0;
+        const done = job.done || 0;
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+        document.getElementById('progressBar').style.width = pct + '%';
+        document.getElementById('progressCount').textContent = `${done} / ${total}`;
+        document.getElementById('successCount').textContent = job.success || 0;
+        document.getElementById('failedCount').textContent = job.failed || 0;
+        document.getElementById('remainCount').textContent = Math.max(0, total - done);
+
+        const currentTitle = job.current || '';
+        document.getElementById('progressLabel').textContent = currentTitle;
+        document.getElementById('currentVideo').textContent = job.status === 'running' && currentTitle
+            ? `처리 중: ${currentTitle}`
+            : '';
+
+        if (job.status === 'completed') {
+            document.getElementById('progressLabel').textContent = `완료! (성공 ${job.success}, 실패 ${job.failed})`;
+            document.getElementById('currentVideo').textContent = '';
+            renderCompletedResults(job.results || []);
+            // 영상 목록 새로고침
+            fetchVideos();
+        } else if (job.status === 'failed') {
+            document.getElementById('progressLabel').textContent = `오류 발생: ${job.error || ''}`;
+        }
+    }
+
+    function renderCompletedResults(results) {
+        const tbody = document.getElementById('resultsTableBody');
+        tbody.innerHTML = results.map(r => `
+            <tr>
+                <td class="text-muted">${r.upload_date || '-'}</td>
+                <td>
+                    <a href="https://www.youtube.com/watch?v=${r.video_id}" target="_blank" style="text-decoration:none; color:#333;">
+                        ${escapeHtml(r.title || r.video_id)}
+                    </a>
+                </td>
+                <td>
+                    ${r.status === 'success'
+                        ? '<span class="badge badge-success">성공</span>'
+                        : `<span class="badge badge-danger">실패</span>`}
+                </td>
+            </tr>
+        `).join('');
+        document.getElementById('completedResults').style.display = 'block';
+    }
+</script>
+{% endblock %}

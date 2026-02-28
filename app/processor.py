@@ -1,16 +1,14 @@
 """
 YouTube 영상 요약 프로세서
 - GPU 가속 Whisper (faster-whisper)
-- Gemini API로 요약
+- Gemini API 또는 OpenRouter로 요약
 - 텍스트 파일로 Google Drive에 저장
 - 에러 분류 및 재시도 지원
 """
 import os
 import tempfile
 import logging
-import google.generativeai as genai
 from downloader import YouTubeDownloader
-from uploader import GoogleDriveUploader
 from whisper_gpu import transcribe_with_gpu
 from error_classifier import classify_error, get_failure_reason_display, is_permanent_failure
 
@@ -22,30 +20,56 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 
 class SimpleProcessor:
-    """YouTube 영상 요약 처리 (GPU Whisper + Gemini API)"""
+    """YouTube 영상 요약 처리 (GPU Whisper + Gemini/OpenRouter API)"""
 
     def __init__(self, config):
         self.config = config
         self.downloader = YouTubeDownloader()
-        self.uploader = GoogleDriveUploader(config)
 
-        # Gemini API 초기화 (항상 사용)
-        api_key = os.getenv('GEMINI_API_KEY')
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다")
-        genai.configure(api_key=api_key)
-        self.gemini_model = genai.GenerativeModel('gemini-2.0-flash')
-        logger.info("Gemini API 초기화 완료")
+        # Google Sheets 업로더
+        spreadsheet_id = getattr(config, 'spreadsheet_id', '') or os.getenv('SPREADSHEET_ID', '')
+        if spreadsheet_id:
+            from sheets_uploader import GoogleSheetsUploader
+            self.sheets_uploader = GoogleSheetsUploader(spreadsheet_id)
+        else:
+            self.sheets_uploader = None
+            logger.warning("SPREADSHEET_ID 미설정 - Sheets 저장 비활성화")
 
-    def process_video(self, video):
+        self.llm_provider = getattr(config, 'llm_provider', 'gemini')
+
+        if self.llm_provider == 'openrouter':
+            # OpenRouter 초기화 (OpenAI 호환)
+            from openai import OpenAI
+            api_key = os.getenv('OPENROUTER_API_KEY')
+            if not api_key:
+                raise ValueError("OPENROUTER_API_KEY 환경변수가 설정되지 않았습니다")
+            self.openrouter_client = OpenAI(
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
+            )
+            self.openrouter_model = getattr(config, 'openrouter_model', 'google/gemma-3-27b-it:free')
+            logger.info(f"OpenRouter API 초기화 완료 (모델: {self.openrouter_model})")
+        else:
+            # Gemini API 초기화
+            from google import genai
+            from google.genai import types as genai_types
+            api_key = os.getenv('GEMINI_API_KEY')
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다")
+            self.gemini_client = genai.Client(api_key=api_key)
+            self.gemini_model_name = 'gemini-2.5-pro'
+            self._genai_types = genai_types
+            logger.info("Gemini API 초기화 완료")
+
+    def process_video(self, video, folder_id=None):
         """영상 처리 메인"""
         video_id = video['id']
         video_url = video['url']
         title = video['title']
+        user_id = video.get('user_id')
 
         logger.info(f"처리 시작: {title}")
 
-        file_id = None
         summary = None
 
         try:
@@ -67,6 +91,7 @@ class SimpleProcessor:
                     video_id=video_id,
                     title=title,
                     channel=video['channel'],
+                    user_id=user_id,
                     summary=None,
                     audio_file_id=None,
                     status='failed',
@@ -80,7 +105,7 @@ class SimpleProcessor:
             logger.info(f"텍스트 추출 완료: {len(text)}자")
 
             # 2. Gemini로 요약
-            logger.info("Gemini로 요약 중...")
+            logger.info(f"{self.llm_provider}로 요약 중...")
             summary, summarize_error = self.summarize(text)
 
             if not summary:
@@ -98,6 +123,7 @@ class SimpleProcessor:
                     video_id=video_id,
                     title=title,
                     channel=video['channel'],
+                    user_id=user_id,
                     summary=None,
                     audio_file_id=None,
                     status='failed',
@@ -110,24 +136,20 @@ class SimpleProcessor:
 
             logger.info(f"요약 완료: {summary[:100]}...")
 
-            # 3. 텍스트 파일로 저장
-            summary_file = self._save_summary_file(video_id, title, summary)
-            logger.info(f"요약 파일 생성: {summary_file}")
+            # 3. 썸네일 URL
+            thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
-            # 4. 구글 드라이브 업로드
-            if os.path.exists(summary_file):
-                safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
-                safe_title = safe_title[:50]
-
-                file_id = self.uploader.upload_text(
-                    summary_file,
-                    f"{safe_title}_요약.txt"
+            # 4. Google Sheets 저장
+            if self.sheets_uploader:
+                self.sheets_uploader.append_summary(
+                    video_id=video_id,
+                    title=title,
+                    channel=video['channel'],
+                    video_url=video_url,
+                    summary=summary,
                 )
-
-                if file_id:
-                    logger.info(f"업로드 완료: {file_id}")
-                else:
-                    logger.warning("Google Drive 업로드 실패 (인증 설정 확인 필요)")
+            else:
+                logger.warning("Sheets 업로더 없음 - DB에만 저장")
 
             # 5. 처리 완료 기록
             from youtube_monitor import YouTubeMonitor
@@ -136,8 +158,9 @@ class SimpleProcessor:
                 video_id=video_id,
                 title=title,
                 channel=video['channel'],
+                user_id=user_id,
                 summary=summary,
-                audio_file_id=file_id
+                thumbnail_url=thumbnail_url,
             )
 
             # 6. 임시 파일 정리
@@ -160,6 +183,7 @@ class SimpleProcessor:
                 video_id=video_id,
                 title=title,
                 channel=video['channel'],
+                user_id=user_id,
                 summary=None,
                 audio_file_id=None,
                 status='failed',
@@ -220,7 +244,7 @@ class SimpleProcessor:
             return None, error_msg
 
     def summarize(self, text: str) -> tuple:
-        """Gemini API로 요약 (429 에러 시 자동 재시도)
+        """LLM API로 요약 (429 에러 시 자동 재시도)
 
         Returns:
             tuple: (summary, error_message) - 성공 시 (summary, None), 실패 시 (None, error_message)
@@ -258,19 +282,63 @@ class SimpleProcessor:
 
 요약:"""
 
+        if self.llm_provider == 'openrouter':
+            return self._summarize_openrouter(prompt)
+        else:
+            return self._summarize_gemini(prompt)
+
+    def _summarize_openrouter(self, prompt: str) -> tuple:
+        """OpenRouter API로 요약"""
+        import time
         max_retries = 5
         for attempt in range(max_retries):
             try:
-                response = self.gemini_model.generate_content(
-                    prompt,
-                    generation_config={
-                        'temperature': 0.3,
-                        'top_p': 0.95,
-                        'max_output_tokens': 1000,
-                    }
+                response = self.openrouter_client.chat.completions.create(
+                    model=self.openrouter_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=2000,
                 )
-                return response.text.strip(), None
+                result = response.choices[0].message.content
+                if not result:
+                    return None, "모델 응답에서 텍스트 추출 실패"
+                return result.strip(), None
+            except Exception as e:
+                error_msg = str(e)
+                if '429' in error_msg and attempt < max_retries - 1:
+                    wait_time = 60 * (attempt + 1)
+                    logger.warning(f"Rate limit 도달, {wait_time}초 대기 후 재시도 ({attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"OpenRouter 요약 실패: {error_msg}")
+                return None, error_msg
 
+    def _summarize_gemini(self, prompt: str) -> tuple:
+        """Gemini API로 요약"""
+        import time
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                response = self.gemini_client.models.generate_content(
+                    model=self.gemini_model_name,
+                    contents=prompt,
+                    config=self._genai_types.GenerateContentConfig(
+                        temperature=0.3,
+                        top_p=0.95,
+                        max_output_tokens=2000,
+                    )
+                )
+                # thinking 모델은 response.text가 None일 수 있어서 parts에서 직접 추출
+                text = response.text
+                if text is None and response.candidates:
+                    parts = response.candidates[0].content.parts
+                    text = '\n'.join(
+                        p.text for p in parts
+                        if hasattr(p, 'text') and p.text and not getattr(p, 'thought', False)
+                    ) or None
+                if text is None:
+                    return None, "모델 응답에서 텍스트 추출 실패"
+                return text.strip(), None
             except Exception as e:
                 error_msg = str(e)
                 if '429' in error_msg and attempt < max_retries - 1:
@@ -444,19 +512,24 @@ class SimpleProcessor:
                 db.session.commit()
                 return False
 
-            # 3. 파일 저장
-            summary_file = self._save_summary_file(video_id, title, summary)
+            # 3. 썸네일 URL
+            thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
-            # 4. 업로드
-            file_id = None
-            if os.path.exists(summary_file):
-                safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
-                file_id = self.uploader.upload_text(summary_file, f"{safe_title}_요약.txt")
+            # 4. Google Sheets 저장
+            if self.sheets_uploader:
+                self.sheets_uploader.append_summary(
+                    video_id=video_id,
+                    title=title,
+                    channel=video['channel'],
+                    video_url=video_url,
+                    summary=summary,
+                )
 
             # 5. 성공 기록
             video_record.status = 'completed'
             video_record.summary = summary
-            video_record.audio_file_id = file_id
+            video_record.thumbnail_url = thumbnail_url
+            video_record.audio_file_id = None
             video_record.error_message = None
             video_record.failure_reason = None
             video_record.is_retryable = True

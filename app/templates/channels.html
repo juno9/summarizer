@@ -31,29 +31,46 @@
 </div>
 
 <div class="card">
-    <h2>Monitored Channels ({{ channels|length }})</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem; margin-bottom:1rem;">
+        <h2 style="margin:0;">모니터링 채널 (<span id="visibleCount">{{ channels|length }}</span> / {{ channels|length }})</h2>
+        <input type="text" id="channelSearch" placeholder="채널 이름 검색..."
+               style="padding:0.5rem 0.75rem; border:1px solid #ddd; border-radius:5px; width:220px; font-size:0.9rem;">
+    </div>
 
     {% if channels %}
-        <table>
+        <!-- 일괄 작업 툴바 -->
+        <div id="bulkToolbar" style="display:none; align-items:center; gap:0.75rem; padding:0.6rem 0.75rem; background:#f0f4ff; border-radius:6px; margin-bottom:0.75rem; flex-wrap:wrap;">
+            <span id="selectedCount" style="font-size:0.9rem; font-weight:600; color:#333;">0개 선택됨</span>
+            <button class="btn btn-sm btn-secondary" onclick="bulkToggle('resume')">선택 활성화</button>
+            <button class="btn btn-sm btn-secondary" onclick="bulkToggle('pause')">선택 일시정지</button>
+            <button class="btn btn-sm btn-danger" onclick="bulkDelete()">선택 삭제</button>
+            <button class="btn btn-sm" style="background:#eee;" onclick="clearSelection()">선택 해제</button>
+        </div>
+
+        <table id="channelsTable">
             <thead>
                 <tr>
-                    <th>Channel</th>
-                    <th>URL</th>
-                    <th>Status</th>
-                    <th>Added</th>
-                    <th>Last Checked</th>
-                    <th>Actions</th>
+                    <th style="width:36px;">
+                        <input type="checkbox" id="selectAll" title="전체 선택"
+                               style="width:16px;height:16px;cursor:pointer;">
+                    </th>
+                    <th>채널</th>
+                    <th>상태</th>
+                    <th>추가일</th>
+                    <th>마지막 체크</th>
+                    <th>액션</th>
                 </tr>
             </thead>
             <tbody>
                 {% for channel in channels %}
-                <tr>
+                <tr data-channel-id="{{ channel.id }}" data-channel-name="{{ (channel.channel_name or 'Unknown')|lower }}">
                     <td>
-                        <strong>{{ channel.channel_name or 'Unknown' }}</strong>
+                        <input type="checkbox" class="channel-checkbox" value="{{ channel.id }}"
+                               style="width:16px;height:16px;cursor:pointer;">
                     </td>
                     <td>
-                        <a href="{{ channel.channel_url }}" target="_blank" class="text-truncate" style="display: block; max-width: 250px;">
-                            {{ channel.channel_url }}
+                        <a href="{{ channel.channel_url }}" target="_blank" style="font-weight:600; text-decoration:none; color:#333;">
+                            {{ channel.channel_name or 'Unknown' }}
                         </a>
                     </td>
                     <td>
@@ -70,18 +87,18 @@
                             <button type="button" class="btn btn-sm btn-success process-latest-btn"
                                     data-channel-id="{{ channel.id }}"
                                     data-channel-name="{{ channel.channel_name or 'Unknown' }}">
-                                Process Latest
+                                처리
                             </button>
                             <form action="/channels/{{ channel.id }}/toggle" method="POST" style="display: inline;">
                                 {% if channel.is_active %}
-                                    <button type="submit" class="btn btn-sm btn-secondary">Pause</button>
+                                    <button type="submit" class="btn btn-sm btn-secondary">정지</button>
                                 {% else %}
-                                    <button type="submit" class="btn btn-sm btn-primary">Resume</button>
+                                    <button type="submit" class="btn btn-sm btn-primary">활성</button>
                                 {% endif %}
                             </form>
                             <form action="/channels/{{ channel.id }}/delete" method="POST" style="display: inline;"
-                                  onsubmit="return confirm('Delete this channel?');">
-                                <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                  onsubmit="return confirm('이 채널을 삭제하시겠습니까?');">
+                                <button type="submit" class="btn btn-sm btn-danger">삭제</button>
                             </form>
                         </div>
                     </td>
@@ -92,8 +109,8 @@
     {% else %}
         <div class="empty-state">
             <p style="font-size: 3rem;">📺</p>
-            <p>No channels added yet</p>
-            <p class="text-muted">Add a YouTube channel above to start monitoring</p>
+            <p>등록된 채널이 없습니다</p>
+            <p class="text-muted">위에서 YouTube 채널을 추가해주세요</p>
         </div>
     {% endif %}
 </div>
@@ -115,69 +132,147 @@ https://www.youtube.com/@channel3"></textarea>
 
 {% block scripts %}
 <script>
+    // ===== 검색 필터 =====
+    const searchInput = document.getElementById('channelSearch');
+    const visibleCountEl = document.getElementById('visibleCount');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            const q = this.value.toLowerCase();
+            let visible = 0;
+            document.querySelectorAll('#channelsTable tbody tr').forEach(row => {
+                const name = row.dataset.channelName || '';
+                const show = name.includes(q);
+                row.style.display = show ? '' : 'none';
+                if (show) visible++;
+            });
+            if (visibleCountEl) visibleCountEl.textContent = visible;
+            updateSelectionUI();
+        });
+    }
+
+    // ===== 체크박스 & 일괄 작업 =====
+    const selectAllEl = document.getElementById('selectAll');
+
+    if (selectAllEl) {
+        selectAllEl.addEventListener('change', function() {
+            document.querySelectorAll('#channelsTable tbody tr:not([style*="display: none"]) .channel-checkbox').forEach(cb => {
+                cb.checked = this.checked;
+            });
+            updateSelectionUI();
+        });
+    }
+
+    document.querySelectorAll('.channel-checkbox').forEach(cb => {
+        cb.addEventListener('change', updateSelectionUI);
+    });
+
+    function getSelectedIds() {
+        return Array.from(document.querySelectorAll('.channel-checkbox:checked')).map(cb => parseInt(cb.value));
+    }
+
+    function updateSelectionUI() {
+        const ids = getSelectedIds();
+        const toolbar = document.getElementById('bulkToolbar');
+        const countEl = document.getElementById('selectedCount');
+        if (toolbar) toolbar.style.display = ids.length > 0 ? 'flex' : 'none';
+        if (countEl) countEl.textContent = `${ids.length}개 선택됨`;
+        if (selectAllEl) {
+            const visibleCbs = document.querySelectorAll('#channelsTable tbody tr:not([style*="display: none"]) .channel-checkbox');
+            selectAllEl.indeterminate = ids.length > 0 && ids.length < visibleCbs.length;
+            selectAllEl.checked = visibleCbs.length > 0 && ids.length === visibleCbs.length;
+        }
+    }
+
+    function clearSelection() {
+        document.querySelectorAll('.channel-checkbox').forEach(cb => cb.checked = false);
+        if (selectAllEl) selectAllEl.checked = false;
+        updateSelectionUI();
+    }
+
+    async function bulkDelete() {
+        const ids = getSelectedIds();
+        if (!ids.length) return;
+        if (!confirm(`선택한 ${ids.length}개 채널을 삭제하시겠습니까?`)) return;
+        const res = await fetch('/api/channels/bulk-delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ids})
+        });
+        const data = await res.json();
+        if (data.success) {
+            alert(`${data.deleted}개 채널이 삭제되었습니다.`);
+            location.reload();
+        } else {
+            alert('삭제 실패: ' + data.message);
+        }
+    }
+
+    async function bulkToggle(action) {
+        const ids = getSelectedIds();
+        if (!ids.length) return;
+        const label = action === 'resume' ? '활성화' : '일시정지';
+        if (!confirm(`선택한 ${ids.length}개 채널을 ${label}하시겠습니까?`)) return;
+        const res = await fetch('/api/channels/bulk-toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ids, action})
+        });
+        const data = await res.json();
+        if (data.success) {
+            location.reload();
+        } else {
+            alert('실패: ' + data.message);
+        }
+    }
+
+    // ===== Bulk Import =====
     document.getElementById('bulkImportForm').addEventListener('submit', function(e) {
         e.preventDefault();
         const urls = document.getElementById('bulkUrls').value.trim().split('\n');
-        let added = 0;
-        let errors = 0;
-
-        const promises = urls.filter(url => url.trim()).map(url => {
-            return fetch('/api/channels', {
+        let added = 0, errors = 0;
+        const promises = urls.filter(url => url.trim()).map(url =>
+            fetch('/api/channels', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({channel_url: url.trim()})
             })
             .then(res => res.json())
-            .then(data => {
-                if (data.success) added++;
-                else errors++;
-            })
-            .catch(() => errors++);
-        });
-
+            .then(data => { if (data.success) added++; else errors++; })
+            .catch(() => errors++)
+        );
         Promise.all(promises).then(() => {
-            alert(`Import complete!\nAdded: ${added}\nErrors/Duplicates: ${errors}`);
+            alert(`임포트 완료!\n추가: ${added}개\n중복/오류: ${errors}개`);
             if (added > 0) location.reload();
         });
     });
 
-    // Process Latest 버튼 이벤트 핸들러
+    // ===== Process Latest =====
     document.querySelectorAll('.process-latest-btn').forEach(btn => {
         btn.addEventListener('click', async function() {
             const channelId = this.dataset.channelId;
             const channelName = this.dataset.channelName;
             const originalText = this.textContent;
-
-            if (!confirm(`"${channelName}" 채널의 최신 영상을 처리하시겠습니까?\n(처리에 시간이 걸릴 수 있습니다)`)) {
-                return;
-            }
-
-            // 버튼 비활성화 및 로딩 표시
+            if (!confirm(`"${channelName}" 채널의 최신 영상을 처리하시겠습니까?`)) return;
             this.disabled = true;
-            this.textContent = 'Processing...';
+            this.textContent = '처리중...';
             this.style.opacity = '0.7';
-
             try {
                 const response = await fetch(`/api/channels/${channelId}/process-latest`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'}
                 });
-
                 const data = await response.json();
-
                 if (data.success) {
-                    alert(`처리 완료!\n\n제목: ${data.title}\n채널: ${data.channel}`);
+                    alert(`처리 완료!\n제목: ${data.title}`);
+                } else if (response.status === 409) {
+                    alert(`이미 처리된 영상입니다.\n제목: ${data.title}`);
                 } else {
-                    if (response.status === 409) {
-                        alert(`이미 처리된 영상입니다.\n\n제목: ${data.title}`);
-                    } else {
-                        alert(`처리 실패: ${data.error}`);
-                    }
+                    alert(`처리 실패: ${data.error}`);
                 }
             } catch (error) {
-                alert(`오류 발생: ${error.message}`);
+                alert(`오류: ${error.message}`);
             } finally {
-                // 버튼 복원
                 this.disabled = false;
                 this.textContent = originalText;
                 this.style.opacity = '1';

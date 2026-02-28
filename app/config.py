@@ -15,6 +15,9 @@ class Config:
         # 구글 드라이브 폴더 ID
         self.google_drive_folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID', '')
 
+        # Google Sheets 스프레드시트 ID
+        self.spreadsheet_id = os.getenv('SPREADSHEET_ID', '')
+
         # 체크 주기 (시간)
         self.check_interval_hours = int(os.getenv('CHECK_INTERVAL_HOURS', '1'))
 
@@ -24,8 +27,11 @@ class Config:
         # Whisper 설정
         self.use_local_whisper = os.getenv('USE_LOCAL_WHISPER', 'true').lower() == 'true'
 
-        # Gemini API 키 확인
+        # LLM 제공자 설정 (gemini 또는 openrouter)
+        self.llm_provider = os.getenv('LLM_PROVIDER', 'gemini').lower()
         self.has_gemini_key = bool(os.getenv('GEMINI_API_KEY'))
+        self.has_openrouter_key = bool(os.getenv('OPENROUTER_API_KEY'))
+        self.openrouter_model = os.getenv('OPENROUTER_MODEL', 'google/gemma-3-27b-it:free')
 
     def to_dict(self):
         return {
@@ -34,5 +40,9 @@ class Config:
             'check_interval_hours': self.check_interval_hours,
             'tts_method': self.tts_method,
             'use_local_whisper': self.use_local_whisper,
-            'has_gemini_key': self.has_gemini_key
+            'spreadsheet_id': self.spreadsheet_id,
+            'has_gemini_key': self.has_gemini_key,
+            'llm_provider': self.llm_provider,
+            'has_openrouter_key': self.has_openrouter_key,
+            'openrouter_model': self.openrouter_model
         }

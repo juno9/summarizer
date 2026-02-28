@@ -26,6 +26,7 @@ class User(Base):
     name = Column(String(200))
     picture = Column(String(500))
     oauth_token = Column(Text)  # JSON string of OAuth credentials (youtube.readonly)
+    drive_folder_id = Column(String(500))  # 유저별 Google Drive 폴더 ID
     created_at = Column(DateTime, default=datetime.now)
     last_login = Column(DateTime, default=datetime.now)
 
@@ -73,7 +74,8 @@ class ProcessedVideo(Base):
     channel = Column(String(200))
     video_url = Column(String(500))
     summary = Column(Text)
-    audio_file_id = Column(String(100))  # 구글 드라이브 파일 ID
+    thumbnail_url = Column(String(500))  # 유튜브 썸네일 URL
+    audio_file_id = Column(String(100))  # 구글 드라이브 파일 ID (deprecated)
     status = Column(String(50), default='completed')  # pending, processing, completed, failed
     error_message = Column(Text)
     failure_reason = Column(String(50))  # membership, rate_limit, network, auth, unknown
@@ -89,6 +91,7 @@ class ProcessedVideo(Base):
             'channel': self.channel,
             'video_url': self.video_url,
             'summary': self.summary,
+            'thumbnail_url': self.thumbnail_url,
             'audio_file_id': self.audio_file_id,
             'status': self.status,
             'error_message': self.error_message,
@@ -188,6 +191,8 @@ class Database:
             cursor.execute("ALTER TABLE processed_videos ADD COLUMN is_retryable BOOLEAN DEFAULT 1")
         if 'user_id' not in pv_columns:
             cursor.execute("ALTER TABLE processed_videos ADD COLUMN user_id INTEGER")
+        if 'thumbnail_url' not in pv_columns:
+            cursor.execute("ALTER TABLE processed_videos ADD COLUMN thumbnail_url VARCHAR(500)")
 
         # channels 컬럼 확인
         cursor.execute("PRAGMA table_info(channels)")
@@ -196,15 +201,94 @@ class Database:
         if 'user_id' not in ch_columns:
             cursor.execute("ALTER TABLE channels ADD COLUMN user_id INTEGER")
 
+        # users 컬럼 확인
+        cursor.execute("PRAGMA table_info(users)")
+        u_columns = [col[1] for col in cursor.fetchall()]
+
+        if 'drive_folder_id' not in u_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN drive_folder_id VARCHAR(500)")
+
+        # processed_videos video_id unique 제약 제거 (user_id별로 같은 video_id 허용)
+        cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='processed_videos'")
+        for idx_name, idx_sql in cursor.fetchall():
+            if idx_sql and 'video_id' in idx_sql and 'UNIQUE' in idx_sql.upper():
+                cursor.execute(f"DROP INDEX IF EXISTS {idx_name}")
+
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='processed_videos'")
+        pv_row = cursor.fetchone()
+        if pv_row and pv_row[0]:
+            pv_lines = pv_row[0].split('\n')
+            pv_has_unique = any(
+                'video_id' in line.lower() and 'unique' in line.lower()
+                for line in pv_lines
+            )
+            if pv_has_unique:
+                cursor.execute("""
+                    CREATE TABLE processed_videos_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER REFERENCES users(id),
+                        video_id VARCHAR(20) NOT NULL,
+                        title VARCHAR(500),
+                        channel VARCHAR(200),
+                        video_url VARCHAR(500),
+                        summary TEXT,
+                        audio_file_id VARCHAR(100),
+                        status VARCHAR(50) DEFAULT 'completed',
+                        error_message TEXT,
+                        failure_reason VARCHAR(50),
+                        retry_count INTEGER DEFAULT 0,
+                        is_retryable BOOLEAN DEFAULT 1,
+                        processed_at DATETIME
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO processed_videos_new
+                    SELECT id, user_id, video_id, title, channel, video_url, summary,
+                           audio_file_id, status, error_message, failure_reason,
+                           retry_count, is_retryable, processed_at
+                    FROM processed_videos
+                """)
+                cursor.execute("DROP TABLE processed_videos")
+                cursor.execute("ALTER TABLE processed_videos_new RENAME TO processed_videos")
+
         # channel_url unique 제약 제거 (user_id별로 같은 채널 등록 가능)
-        # SQLite는 unique 제약 변경이 어려우므로 테이블 재생성 방식 사용
-        cursor.execute("PRAGMA table_info(channels)")
-        # 기존 unique 인덱스 확인
+        # 기존 unique 인덱스 확인 및 제거
         cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='channels'")
         indexes = cursor.fetchall()
         for idx_name, idx_sql in indexes:
             if idx_sql and 'channel_url' in idx_sql and 'UNIQUE' in idx_sql.upper():
                 cursor.execute(f"DROP INDEX IF EXISTS {idx_name}")
+
+        # 테이블 정의에 인라인 UNIQUE 제약이 있는 경우 테이블 재생성으로 제거
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='channels'")
+        row = cursor.fetchone()
+        if row and row[0]:
+            table_sql = row[0].upper()
+            # channel_url 컬럼에 UNIQUE가 인라인으로 있는지 확인
+            lines = row[0].split('\n')
+            has_inline_unique = any(
+                'channel_url' in line.lower() and 'unique' in line.lower()
+                for line in lines
+            )
+            if has_inline_unique:
+                cursor.execute("""
+                    CREATE TABLE channels_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER REFERENCES users(id),
+                        channel_url VARCHAR(500) NOT NULL,
+                        channel_name VARCHAR(200),
+                        is_active BOOLEAN DEFAULT 1,
+                        added_at DATETIME,
+                        last_checked DATETIME
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO channels_new (id, user_id, channel_url, channel_name, is_active, added_at, last_checked)
+                    SELECT id, user_id, channel_url, channel_name, is_active, added_at, last_checked
+                    FROM channels
+                """)
+                cursor.execute("DROP TABLE channels")
+                cursor.execute("ALTER TABLE channels_new RENAME TO channels")
 
         conn.commit()
         conn.close()
@@ -246,19 +330,32 @@ class Database:
             user.oauth_token = oauth_token
             self.session.commit()
 
+    def update_user_drive_folder(self, user_id, drive_folder_id):
+        """유저별 Drive 폴더 ID 업데이트"""
+        user = self.session.query(User).filter_by(id=user_id).first()
+        if user:
+            user.drive_folder_id = drive_folder_id
+            self.session.commit()
+            return True
+        return False
+
     # Channel 관련 메서드
     def add_channel(self, channel_url, channel_name=None, user_id=None):
-        """채널 추가"""
+        """채널 추가. 이미 존재하면 None 반환, DB 오류 시 예외 발생"""
         query = self.session.query(Channel).filter_by(channel_url=channel_url)
         if user_id:
             query = query.filter_by(user_id=user_id)
         if query.first():
             return None
 
-        channel = Channel(channel_url=channel_url, channel_name=channel_name, user_id=user_id)
-        self.session.add(channel)
-        self.session.commit()
-        return channel
+        try:
+            channel = Channel(channel_url=channel_url, channel_name=channel_name, user_id=user_id)
+            self.session.add(channel)
+            self.session.commit()
+            return channel
+        except Exception:
+            self.session.rollback()
+            raise
 
     def get_channels(self, active_only=False, user_id=None):
         """채널 목록 조회"""
@@ -289,26 +386,31 @@ class Database:
 
     # ProcessedVideo 관련 메서드
     def add_processed_video(self, video_id, title, channel, video_url=None,
-                           summary=None, audio_file_id=None, status='completed',
-                           error_message=None, failure_reason=None, is_retryable=True,
-                           user_id=None):
+                           summary=None, thumbnail_url=None, audio_file_id=None,
+                           status='completed', error_message=None, failure_reason=None,
+                           is_retryable=True, user_id=None):
         """처리된 영상 추가"""
-        video = ProcessedVideo(
-            video_id=video_id,
-            title=title,
-            channel=channel,
-            video_url=video_url or f"https://www.youtube.com/watch?v={video_id}",
-            summary=summary,
-            audio_file_id=audio_file_id,
-            status=status,
-            error_message=error_message,
-            failure_reason=failure_reason,
-            is_retryable=is_retryable,
-            user_id=user_id,
-        )
-        self.session.add(video)
-        self.session.commit()
-        return video
+        try:
+            video = ProcessedVideo(
+                video_id=video_id,
+                title=title,
+                channel=channel,
+                video_url=video_url or f"https://www.youtube.com/watch?v={video_id}",
+                summary=summary,
+                thumbnail_url=thumbnail_url or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                audio_file_id=audio_file_id,
+                status=status,
+                error_message=error_message,
+                failure_reason=failure_reason,
+                is_retryable=is_retryable,
+                user_id=user_id,
+            )
+            self.session.add(video)
+            self.session.commit()
+            return video
+        except Exception:
+            self.session.rollback()
+            raise
 
     def get_processed_videos(self, limit=50, offset=0, user_id=None):
         """처리된 영상 목록"""

@@ -67,12 +67,18 @@ def main():
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             print("토큰 갱신 중...")
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"토큰 갱신 실패: {e}")
+                print("새 토큰을 발급받습니다...\n")
+                creds = None
+
+        if not creds or not creds.valid:
             client_config = get_client_config()
 
             if not client_config:
-                print("\n❌ 오류: Google OAuth 클라이언트 정보가 없습니다.")
+                print("\n[오류] Google OAuth 클라이언트 정보가 없습니다.")
                 print("\n방법 1: .env 파일에 설정")
                 print("  DRIVE_CLIENT_ID=your_client_id")
                 print("  DRIVE_CLIENT_SECRET=your_client_secret")
@@ -93,7 +99,7 @@ def main():
         # 토큰 저장
         with open(TOKEN_PATH, 'w') as token:
             token.write(creds.to_json())
-        print(f"\n✅ 토큰 저장 완료: {TOKEN_PATH}")
+        print(f"\n[완료] 토큰 저장 완료: {TOKEN_PATH}")
 
     print("\n" + "="*50)
     print("인증 성공!")

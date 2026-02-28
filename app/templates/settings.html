@@ -4,31 +4,32 @@
 
 {% block content %}
 <div class="card">
-    <h2>Google Drive Integration</h2>
+    <h2>Google 연동 (Drive + Sheets)</h2>
 
     {% if google_connected %}
         <div style="display: flex; align-items: center; gap: 1rem; padding: 1rem; background: #d4edda; border-radius: 5px; margin-bottom: 1rem;">
             <span style="font-size: 2rem;">&#9989;</span>
             <div>
-                <strong>Connected</strong>
+                <strong>연결됨</strong>
                 {% if google_email %}
                     <p class="text-muted" style="margin: 0;">{{ google_email }}</p>
                 {% endif %}
+                <p class="text-muted" style="margin: 0; font-size: 0.8rem;">Drive + Sheets 권한 포함</p>
             </div>
             <form action="/oauth/disconnect" method="POST" style="margin-left: auto;">
-                <button type="submit" class="btn btn-danger" onclick="return confirm('Disconnect Google Drive?')">
-                    Disconnect
+                <button type="submit" class="btn btn-danger" onclick="return confirm('Google 연동을 해제하시겠습니까?')">
+                    연동 해제
                 </button>
             </form>
         </div>
-        <p class="text-muted">Audio files will be uploaded to your Google Drive.</p>
+        <p class="text-muted">요약 결과가 Google Sheets에 자동으로 저장됩니다.</p>
 
     {% else %}
         <div style="display: flex; align-items: center; gap: 1rem; padding: 1rem; background: #f8f9fa; border-radius: 5px; margin-bottom: 1rem;">
             <span style="font-size: 2rem;">&#128274;</span>
             <div>
-                <strong>Not Connected</strong>
-                <p class="text-muted" style="margin: 0;">Connect Google Drive to upload audio files</p>
+                <strong>연결 안됨</strong>
+                <p class="text-muted" style="margin: 0;">Google 계정 연동 후 Sheets 저장이 활성화됩니다</p>
             </div>
         </div>
 
@@ -40,42 +41,46 @@
                     <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
                     <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
                 </svg>
-                Connect with Google
+                Google 계정 연동
             </a>
         {% else %}
             <div style="padding: 1rem; background: #fff3cd; border-radius: 5px; border: 1px solid #ffc107;">
-                <strong>Setup Required</strong>
+                <strong>설정 필요</strong>
                 <p style="margin: 0.5rem 0 0 0;">
-                    <code>google_credentials.json</code> file is missing.<br>
-                    Please follow these steps:
+                    <code>google_credentials.json</code> 파일이 없습니다.
                 </p>
                 <ol style="margin: 0.5rem 0 0 1.5rem; padding: 0;">
-                    <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a></li>
-                    <li>Create OAuth 2.0 Client ID (Web application type)</li>
-                    <li>Add redirect URI: <code>http://localhost:5000/oauth/callback</code></li>
-                    <li>Download JSON and save as <code>credentials/google_credentials.json</code></li>
-                    <li>Restart the container</li>
+                    <li><a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a>에서 OAuth 2.0 클라이언트 ID 생성</li>
+                    <li>Redirect URI 추가: <code>http://localhost:5000/oauth/callback</code></li>
+                    <li>JSON 다운로드 후 <code>credentials/google_credentials.json</code>으로 저장</li>
+                    <li>컨테이너 재시작</li>
                 </ol>
             </div>
         {% endif %}
     {% endif %}
+
+    {% if google_connected %}
+    <div style="margin-top: 1rem; padding: 0.75rem; background: #fff3cd; border-radius: 5px; border: 1px solid #ffc107; font-size: 0.85rem;">
+        <strong>기존 token.json이 있다면 재연동 필요</strong><br>
+        Sheets 권한이 추가되었으므로 연동 해제 후 다시 연결하면 Sheets 저장이 활성화됩니다.
+    </div>
+    {% endif %}
 </div>
 
 <div class="card">
-    <h2>Google Drive Folder</h2>
-    <p class="text-muted">Specify a folder ID where audio files will be uploaded.</p>
-
-    <div class="form-group">
-        <label for="folderId">Folder ID</label>
-        <input type="text" id="folderId" value="{{ drive_folder_id }}" placeholder="Leave empty for root folder">
+    <h2>Google Sheets 설정</h2>
+    <p class="text-muted">요약이 저장될 스프레드시트 ID입니다. <code>.env</code>의 <code>SPREADSHEET_ID</code>로 설정합니다.</p>
+    <div style="padding: 0.75rem; background: #f8f9fa; border-radius: 5px;">
+        <strong>현재 스프레드시트:</strong>
+        {% if config is defined and config.spreadsheet_id %}
+            <a href="https://docs.google.com/spreadsheets/d/{{ config.spreadsheet_id }}/edit" target="_blank">
+                {{ config.spreadsheet_id }}
+            </a>
+            <br><small class="text-muted">컬럼 순서: 처리일시 / 제목 / 채널 / 영상 URL / 썸네일 URL / 요약</small>
+        {% else %}
+            <span class="badge badge-danger">미설정 (.env에 SPREADSHEET_ID 추가 필요)</span>
+        {% endif %}
     </div>
-    <p class="text-muted" style="font-size: 0.85rem;">
-        To get folder ID: Open the folder in Google Drive, copy the ID from URL:<br>
-        <code>https://drive.google.com/drive/folders/<strong>FOLDER_ID_HERE</strong></code>
-    </p>
-    <p class="text-muted" style="font-size: 0.85rem; margin-top: 0.5rem;">
-        Note: To change this, update <code>GOOGLE_DRIVE_FOLDER_ID</code> in your <code>.env</code> file and restart.
-    </p>
 </div>
 
 <div class="card">
@@ -93,6 +98,19 @@
             <td class="text-muted">TTS_METHOD</td>
         </tr>
         <tr>
+            <td><strong>LLM Provider</strong></td>
+            <td>
+                {% if config is defined %}
+                    {% if config.llm_provider == 'openrouter' %}
+                        <span class="badge badge-success">OpenRouter</span>
+                    {% else %}
+                        <span class="badge badge-success">Gemini</span>
+                    {% endif %}
+                {% endif %}
+            </td>
+            <td class="text-muted">LLM_PROVIDER</td>
+        </tr>
+        <tr>
             <td><strong>Gemini API</strong></td>
             <td>
                 {% if config is defined and config.has_gemini_key %}
@@ -102,6 +120,17 @@
                 {% endif %}
             </td>
             <td class="text-muted">GEMINI_API_KEY</td>
+        </tr>
+        <tr>
+            <td><strong>OpenRouter API</strong></td>
+            <td>
+                {% if config is defined and config.has_openrouter_key %}
+                    <span class="badge badge-success">Configured</span> {{ config.openrouter_model }}
+                {% else %}
+                    <span class="badge badge-danger">Not Set</span>
+                {% endif %}
+            </td>
+            <td class="text-muted">OPENROUTER_API_KEY</td>
         </tr>
     </table>
 

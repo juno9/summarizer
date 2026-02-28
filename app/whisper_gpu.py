@@ -121,4 +121,32 @@ def transcribe_with_gpu(audio_file, language='ko'):
 
     except Exception as e:
         logger.error(f"음성 인식 실패: {e}")
+        # CUDA 실패 시 싱글톤 리셋 후 CPU로 재시도
+        if _model_backend == "cuda":
+            logger.info("CUDA 실패, CPU 모드로 싱글톤 리셋 후 재시도...")
+            _whisper_model = None
+            _batched_pipeline = None
+            _model_backend = None
+            try:
+                from faster_whisper import WhisperModel, BatchedInferencePipeline
+                cpu_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+                cpu_batched = BatchedInferencePipeline(model=cpu_model)
+                _whisper_model = cpu_model
+                _batched_pipeline = cpu_batched
+                _model_backend = "cpu"
+                logger.info("CPU 모드 전환 완료, 재시도...")
+                segments, info = cpu_batched.transcribe(
+                    audio_file,
+                    language=language,
+                    batch_size=8,
+                    vad_filter=True,
+                )
+                full_text = ""
+                for segment in segments:
+                    full_text += segment.text + " "
+                logger.info(f"CPU 음성 인식 완료: {len(full_text)}자")
+                return full_text.strip()
+            except Exception as cpu_e:
+                logger.error(f"CPU 재시도 실패: {cpu_e}")
+                raise cpu_e
         raise

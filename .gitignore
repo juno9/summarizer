@@ -4,27 +4,31 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.egg-info/
+
+# 가상환경
 env/
 venv/
 ENV/
-*.egg-info/
+gpu_env/
 
-# 환경 변수
+# 환경 변수 (절대 커밋 금지)
 .env
 
+# 인증 정보 (절대 커밋 금지)
+credentials/
+!credentials/.gitkeep
+
 # 데이터
-data/*.db
-data/*.log
-data/cache/
+data/
+!data/.gitkeep
 
-# 인증
-credentials/token.json
-credentials/google_credentials.json
-
-# 임시 파일
-/tmp/
+# 임시/쓰레기 파일
 *.tmp
 *.log
+*.zip
+nul
+=*
 
 # IDE
 .vscode/
@@ -35,3 +39,6 @@ credentials/google_credentials.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code 로컬 설정
+.claude/settings.local.json

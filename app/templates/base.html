@@ -318,6 +318,7 @@
         <div class="nav-links">
             <a href="/" class="{% if request.endpoint == 'index' %}active{% endif %}">Dashboard</a>
             <a href="/channels" class="{% if request.endpoint == 'channels' %}active{% endif %}">Channels</a>
+            <a href="/batch" class="{% if request.endpoint == 'batch_summarize' %}active{% endif %}">기간별 요약</a>
             <a href="/history" class="{% if request.endpoint == 'history' %}active{% endif %}">History</a>
             <a href="/failed" class="{% if request.endpoint == 'failed_videos' %}active{% endif %}">Failed</a>
             <a href="/logs" class="{% if request.endpoint == 'logs' %}active{% endif %}">Logs</a>

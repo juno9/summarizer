@@ -4,7 +4,9 @@ Flask 웹 서버 - 대시보드
 import os
 import re
 import json
+import uuid
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
@@ -19,10 +21,15 @@ import jwt
 
 # HTTPS 요구 비활성화 (개발용)
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+# 반환된 스코프가 요청 스코프의 부분집합이어도 허용
+os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
 # ========== 스코프 정의 ==========
-# Drive 연동용 (설정 페이지)
-DRIVE_SCOPES = ['https://www.googleapis.com/auth/drive.file']
+# Drive + Sheets 연동용 (설정 페이지)
+DRIVE_SCOPES = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/spreadsheets',
+]
 
 # 로그인용 (구글 계정 + 유튜브 구독 읽기)
 LOGIN_SCOPES = [
@@ -41,6 +48,9 @@ JWT_EXPIRE_DAYS = 30
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'youtube-summarizer-secret-key-2024')
+
+# 배치 작업 상태 추적 (in-memory)
+batch_jobs = {}
 
 # API Blueprint 등록
 app.register_blueprint(api)
@@ -281,13 +291,16 @@ def add_channel():
         return redirect(url_for('channels'))
 
     channel_name = extract_channel_name(channel_url) or request.form.get('channel_name')
-    channel = db.add_channel(channel_url, channel_name, user_id=user_id)
-
-    if channel:
-        flash(f'채널 "{channel_name or channel_url}"이 추가되었습니다.', 'success')
-        db.add_log('INFO', f'채널 추가: {channel_url}', 'web')
-    else:
-        flash('이미 등록된 채널입니다.', 'warning')
+    try:
+        channel = db.add_channel(channel_url, channel_name, user_id=user_id)
+        if channel:
+            flash(f'채널 "{channel_name or channel_url}"이 추가되었습니다.', 'success')
+            db.add_log('INFO', f'채널 추가: {channel_url}', 'web')
+        else:
+            flash('이미 등록된 채널입니다.', 'warning')
+    except Exception as e:
+        logger.error(f"채널 추가 실패: {e}")
+        flash(f'채널 추가 중 오류가 발생했습니다: {e}', 'error')
 
     return redirect(url_for('channels'))
 
@@ -368,6 +381,171 @@ def delete_channel(channel_id):
     else:
         flash('채널을 찾을 수 없습니다.', 'error')
     return redirect(url_for('channels'))
+
+
+@app.route('/batch')
+@login_required
+def batch_summarize():
+    """기간별 영상 일괄 요약 페이지"""
+    user_id = session['user_id']
+    channels = db.get_channels(active_only=False, user_id=user_id) if db else []
+    return render_template('batch.html', channels=channels, current_user=get_current_user())
+
+
+@app.route('/api/batch/fetch', methods=['POST'])
+@login_required
+def api_batch_fetch():
+    """채널에서 기간별 영상 목록 조회"""
+    from youtube_monitor import YouTubeMonitor
+    data = request.json or {}
+    channel_url = data.get('channel_url', '').strip()
+    start_date = data.get('start_date', '').strip()
+    end_date = data.get('end_date', '').strip()
+    user_id = session['user_id']
+
+    if not channel_url or not start_date or not end_date:
+        return jsonify({'error': '채널 URL, 시작일, 종료일을 모두 입력해주세요.'}), 400
+    if start_date > end_date:
+        return jsonify({'error': '시작일이 종료일보다 늦을 수 없습니다.'}), 400
+
+    try:
+        config = Config()
+        monitor = YouTubeMonitor(config)
+        videos = monitor.fetch_videos_by_date_range(channel_url, start_date, end_date)
+
+        for video in videos:
+            video['is_processed'] = db.is_video_processed(video['id'], user_id=user_id)
+
+        return jsonify({
+            'videos': videos,
+            'total': len(videos),
+            'unprocessed': sum(1 for v in videos if not v['is_processed']),
+        })
+    except Exception as e:
+        logger.error(f"기간별 영상 목록 조회 실패: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/batch/process', methods=['POST'])
+@login_required
+def api_batch_process():
+    """기간별 영상 일괄 처리 시작 (백그라운드)"""
+    data = request.json or {}
+    channel_url = data.get('channel_url', '').strip()
+    start_date = data.get('start_date', '').strip()
+    end_date = data.get('end_date', '').strip()
+    video_ids = data.get('video_ids')  # None이면 미처리 전체, 리스트면 선택 항목만
+    user_id = session['user_id']
+
+    if not channel_url or not start_date or not end_date:
+        return jsonify({'error': '파라미터가 부족합니다.'}), 400
+
+    job_id = str(uuid.uuid4())
+    batch_jobs[job_id] = {
+        'status': 'running',
+        'total': 0,
+        'done': 0,
+        'success': 0,
+        'failed': 0,
+        'skipped': 0,
+        'current': '영상 목록 조회 중...',
+        'results': [],
+        'user_id': user_id,
+    }
+
+    def run_batch():
+        try:
+            from youtube_monitor import YouTubeMonitor
+            from processor import SimpleProcessor
+            import time
+
+            config = Config()
+            monitor = YouTubeMonitor(config)
+            processor = SimpleProcessor(config)
+
+            # 영상 목록 가져오기
+            all_videos = monitor.fetch_videos_by_date_range(channel_url, start_date, end_date)
+
+            if video_ids is not None:
+                # 선택된 video_id만
+                id_set = set(video_ids)
+                videos = [v for v in all_videos if v['id'] in id_set]
+            else:
+                # 미처리 영상만
+                videos = [v for v in all_videos if not db.is_video_processed(v['id'], user_id=user_id)]
+
+            batch_jobs[job_id]['total'] = len(videos)
+            batch_jobs[job_id]['current'] = f'총 {len(videos)}개 영상 처리 시작'
+
+            if not videos:
+                batch_jobs[job_id]['status'] = 'completed'
+                batch_jobs[job_id]['current'] = '처리할 영상 없음'
+                return
+
+            for i, video in enumerate(videos):
+                batch_jobs[job_id]['current'] = video['title']
+                video['user_id'] = user_id
+
+                try:
+                    success = processor.process_video(video)
+                    if success:
+                        batch_jobs[job_id]['success'] += 1
+                        batch_jobs[job_id]['results'].append({
+                            'video_id': video['id'],
+                            'title': video['title'],
+                            'upload_date': video.get('upload_date_display', ''),
+                            'status': 'success',
+                        })
+                    else:
+                        batch_jobs[job_id]['failed'] += 1
+                        batch_jobs[job_id]['results'].append({
+                            'video_id': video['id'],
+                            'title': video['title'],
+                            'upload_date': video.get('upload_date_display', ''),
+                            'status': 'failed',
+                        })
+                except Exception as e:
+                    batch_jobs[job_id]['failed'] += 1
+                    batch_jobs[job_id]['results'].append({
+                        'video_id': video['id'],
+                        'title': video['title'],
+                        'upload_date': video.get('upload_date_display', ''),
+                        'status': 'failed',
+                        'error': str(e),
+                    })
+
+                batch_jobs[job_id]['done'] += 1
+
+                # 마지막 영상이 아니면 rate limit 대기
+                if i < len(videos) - 1:
+                    time.sleep(30)
+
+            batch_jobs[job_id]['status'] = 'completed'
+            batch_jobs[job_id]['current'] = '완료'
+
+        except Exception as e:
+            logger.error(f"배치 처리 실패: {e}")
+            batch_jobs[job_id]['status'] = 'failed'
+            batch_jobs[job_id]['error'] = str(e)
+            batch_jobs[job_id]['current'] = f'오류: {e}'
+
+    t = threading.Thread(target=run_batch, daemon=True)
+    t.start()
+
+    return jsonify({'job_id': job_id})
+
+
+@app.route('/api/batch/status/<job_id>')
+@login_required
+def api_batch_status(job_id):
+    """배치 처리 상태 조회"""
+    user_id = session['user_id']
+    job = batch_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': '작업을 찾을 수 없습니다.'}), 404
+    if job['user_id'] != user_id:
+        return jsonify({'error': '권한 없음'}), 403
+    return jsonify(job)
 
 
 @app.route('/history')
@@ -454,17 +632,44 @@ def settings():
 
     has_credentials_file = os.path.exists(CREDENTIALS_PATH)
 
+    user = get_current_user()
+    user_folder_id = user.drive_folder_id if user and user.drive_folder_id else os.getenv('GOOGLE_DRIVE_FOLDER_ID', '')
+
+    try:
+        config = Config()
+    except Exception:
+        config = None
+
     return render_template('settings.html',
                            google_connected=google_connected,
                            google_email=google_email,
                            has_credentials_file=has_credentials_file,
-                           drive_folder_id=os.getenv('GOOGLE_DRIVE_FOLDER_ID', ''),
+                           drive_folder_id=user_folder_id,
                            check_interval=os.getenv('CHECK_INTERVAL_HOURS', '1'),
                            tts_method=os.getenv('TTS_METHOD', 'gtts'),
-                           current_user=get_current_user())
+                           config=config,
+                           current_user=user)
 
 
 # ========== Google Drive OAuth (기존 유지) ==========
+
+@app.route('/settings/drive-folder', methods=['POST'])
+@login_required
+def save_drive_folder():
+    user_id = session['user_id']
+    folder_id = request.form.get('drive_folder_id', '').strip()
+    # URL에서 폴더 ID만 추출 (전체 URL 붙여넣기 허용)
+    match = re.search(r'/folders/([a-zA-Z0-9_-]+)', folder_id)
+    if match:
+        folder_id = match.group(1)
+    else:
+        # ID만 입력한 경우: ?hl=ko 같은 쿼리스트링 및 # fragment, trailing 점 제거
+        folder_id = re.split(r'[?#\s]', folder_id)[0].rstrip('.')
+    if db:
+        db.update_user_drive_folder(user_id, folder_id)
+        flash('Google Drive 폴더가 저장되었습니다.', 'success')
+    return redirect(url_for('settings'))
+
 
 @app.route('/oauth/google')
 @login_required
@@ -573,6 +778,43 @@ def api_channels():
     user_id = session.get('user_id')
     channels = db.get_channels(user_id=user_id)
     return jsonify([c.to_dict() for c in channels])
+
+
+@app.route('/api/channels/bulk-delete', methods=['POST'])
+@login_required
+def api_bulk_delete_channels():
+    from models import Channel as ChannelModel
+    user_id = session['user_id']
+    ids = request.json.get('ids', [])
+    if not ids:
+        return jsonify({'success': False, 'message': '선택된 채널이 없습니다.'}), 400
+    deleted = 0
+    for channel_id in ids:
+        ch = db.session.query(ChannelModel).filter_by(id=channel_id, user_id=user_id).first()
+        if ch:
+            db.session.delete(ch)
+            deleted += 1
+    db.session.commit()
+    return jsonify({'success': True, 'deleted': deleted})
+
+
+@app.route('/api/channels/bulk-toggle', methods=['POST'])
+@login_required
+def api_bulk_toggle_channels():
+    from models import Channel as ChannelModel
+    user_id = session['user_id']
+    ids = request.json.get('ids', [])
+    action = request.json.get('action', 'pause')  # 'pause' or 'resume'
+    if not ids:
+        return jsonify({'success': False, 'message': '선택된 채널이 없습니다.'}), 400
+    updated = 0
+    for channel_id in ids:
+        ch = db.session.query(ChannelModel).filter_by(id=channel_id, user_id=user_id).first()
+        if ch:
+            ch.is_active = (action == 'resume')
+            updated += 1
+    db.session.commit()
+    return jsonify({'success': True, 'updated': updated})
 
 
 @app.route('/api/videos')
